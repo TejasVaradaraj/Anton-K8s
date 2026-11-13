@@ -1,10 +1,15 @@
 # Multi-tenancy design: one namespace per team
 
-Status: **design, not yet implemented.** Today every session lives in the
-`anton` namespace and tenancy is enforced in the API (every lookup filters by
-team). This document is the plan for real Kubernetes isolation and the
-reasoning behind it, written before the code because the cache and RBAC
-choices are easy to get subtly wrong.
+Status: **implemented behind `tenancy.enabled` (default off).** With the
+switch off, every session lives in the `anton` namespace and tenancy is
+enforced in the API (every lookup filters by team). With it on, the layout
+below applies. `deploy/tenancy-check.sh` verifies it on a running cluster
+(two teams, their namespaces and policies, least privilege for each platform
+service account, and network isolation between teams); it passes on kind.
+Not yet exercised: `cache_salt` against a real vLLM + LMCache server, moving
+existing sessions between namespaces, and the benchmark, which still runs in
+the platform namespace. This document was written before the code because
+the cache and RBAC choices are easy to get subtly wrong.
 
 ## Goals
 
