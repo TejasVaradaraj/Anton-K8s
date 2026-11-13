@@ -1,0 +1,52 @@
+{
+ "model": "Qwen/Qwen2.5-7B-Instruct",
+ "stack": "vLLM 0.33.0 + LMCache 0.5.6 (CPU backend, chunk 2048), fp16, torch 2.14.0",
+ "gpu": "NVIDIA L4",
+ "source": "bench/vllm_lmcache_calibrate.ipynb with CHUNK=2048, Colab 2026-11-12",
+ "rows": [
+  {
+   "tokens": 1000,
+   "prefill_s": 0.2529466959999809,
+   "kv_bytes": 57344000,
+   "offload_s": 0.01293633399995997,
+   "restore_s": 0.27532976699990286,
+   "note": "shorter than one 2048-token chunk: LMCache stores no partial chunk, so this 'restore' is a recompute"
+  },
+  {
+   "tokens": 2000,
+   "prefill_s": 0.5041067259999181,
+   "kv_bytes": 114688000,
+   "offload_s": 0.03264707800008182,
+   "restore_s": 0.5653167099999337,
+   "note": "shorter than one 2048-token chunk: LMCache stores no partial chunk, so this 'restore' is a recompute"
+  },
+  {
+   "tokens": 4000,
+   "prefill_s": 1.0627714680000508,
+   "kv_bytes": 229376000,
+   "offload_s": 0.0976095499999019,
+   "restore_s": 0.6533382019999863
+  },
+  {
+   "tokens": 8000,
+   "prefill_s": 2.2288784209999903,
+   "kv_bytes": 458752000,
+   "offload_s": 0.22667823400001907,
+   "restore_s": 0.8911662099999376
+  },
+  {
+   "tokens": 16000,
+   "prefill_s": 4.954550276999953,
+   "kv_bytes": 917504000,
+   "offload_s": 0.4571111650002422,
+   "restore_s": 1.3686682669999755
+  },
+  {
+   "tokens": 32000,
+   "prefill_s": 12.093912193000051,
+   "kv_bytes": 1835008000,
+   "offload_s": 0.7837483319999592,
+   "restore_s": 2.205305945999953
+  }
+ ]
+}

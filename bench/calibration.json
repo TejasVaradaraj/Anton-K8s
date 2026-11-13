@@ -1,0 +1,48 @@
+{
+ "model": "Qwen/Qwen2.5-1.5B-Instruct",
+ "stack": "Hugging Face transformers, fp16, Colab GPU",
+ "rows": [
+  {
+   "tokens": 1000,
+   "prefill_s": 0.17389382400000386,
+   "kv_bytes": 28672000,
+   "offload_s": 0.09782308100000137,
+   "restore_s": 0.061668268000005355
+  },
+  {
+   "tokens": 2000,
+   "prefill_s": 0.34978896099997314,
+   "kv_bytes": 57344000,
+   "offload_s": 0.2307120080000118,
+   "restore_s": 0.07347231700001089
+  },
+  {
+   "tokens": 4000,
+   "prefill_s": 0.7282592789999853,
+   "kv_bytes": 114688000,
+   "offload_s": 0.4513541919999966,
+   "restore_s": 0.2214003919999925
+  },
+  {
+   "tokens": 8000,
+   "prefill_s": 1.7213467620000245,
+   "kv_bytes": 229376000,
+   "offload_s": 0.5370163110000021,
+   "restore_s": 0.2941205459999878
+  },
+  {
+   "tokens": 12000,
+   "prefill_s": 3.170129121000002,
+   "kv_bytes": 344064000,
+   "offload_s": 0.9222836920000077,
+   "restore_s": 0.4574159500000121
+  },
+  {
+   "tokens": 16000,
+   "prefill_s": 5.114160142999992,
+   "kv_bytes": 458752000,
+   "offload_s": 0.7102099930000065,
+   "restore_s": 0.42587112100000013
+  }
+ ]
+}

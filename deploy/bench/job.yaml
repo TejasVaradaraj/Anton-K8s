@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: anton-bench
+  namespace: anton
+spec:
+  backoffLimit: 0
+  template:
+    metadata: {labels: {app: anton-bench}}
+    spec:
+      serviceAccountName: anton-bench
+      restartPolicy: Never
+      nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: bench
+          image: anton:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bench
+            - --modes=plain,sandbox,routing,anton
+            - --sessions=24
+            - --duration=3m
+            - --replicas=4
+            - --spot-deadline=10s
+            - --hibernate=4
+            - --seeds=1,2,3

@@ -1,0 +1,18 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {"name": "anton-bench", "namespace": "anton", "labels": {"anton.dev/profile": "__PROFILE__"}},
+  "spec": {
+    "backoffLimit": 0,
+    "template": {
+      "metadata": {"labels": {"app": "anton-bench"}},
+      "spec": {
+        "serviceAccountName": "anton-bench",
+        "restartPolicy": "Never",
+        __PLACEMENT__
+        "containers": [{"name": "bench", "image": "__IMAGE__", "imagePullPolicy": "IfNotPresent",
+                        "command": ["/bin/bench", __ARGS__]}]
+      }
+    }
+  }
+}

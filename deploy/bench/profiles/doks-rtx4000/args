@@ -1,0 +1,13 @@
+# Real GPUs: 2 replicas on 2 GPU nodes. Run stages override these.
+--profile=doks-rtx4000
+--replicas=2
+--sessions=6
+--ctx-min=4000
+--ctx-max=12000
+--grow-min=100
+--grow-max=400
+--ctx-cap=30000
+--duration=3m
+--spot-deadline=10s
+--hibernate=2
+--seeds=1

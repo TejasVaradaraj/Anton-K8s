@@ -1,0 +1,15 @@
+# Qwen2.5-7B-Instruct on an NVIDIA A100-SXM4-40GB, measured with vLLM 0.33 +
+# LMCache 0.5.6 (CPU backend): bench/calibration_vllm_qwen7b_a100.json.
+# Prefill is ~4x faster than on the L4 but the tier is no faster, so the
+# offload-or-recompute rule mostly says "recompute" here.
+inference:
+  sim:
+    PREFILL_CURVE: "1000:0.0820,2000:0.1259,4000:0.2544,8000:0.5257,16000:1.1685,32000:2.9245"
+    PREFILL_MS_PER_TOKEN: "0.0730"        # 16k row; only shown, the curve is used
+    BYTES_PER_TOKEN: "57344"
+    OFFLOAD_BYTES_PER_SEC: "1250000000"   # 16k row: 917.5 MB in 0.734 s
+    RESTORE_BYTES_PER_SEC: "651000000"    # 16k row: 917.5 MB in 1.410 s
+    FIRST_TOKEN_MS: "20"
+    # 40 GB x 0.85 vLLM budget - 15.2 GB weights - ~1.5 GB activations = ~17 GB of KV
+    CAPACITY_TOKENS: "300000"
+    CONCURRENCY: "4"

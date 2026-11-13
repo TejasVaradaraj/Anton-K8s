@@ -1,0 +1,51 @@
+# Real inference on DigitalOcean: 2x RTX 4000 Ada (20 GB), Qwen2.5-7B AWQ
+# (4-bit weights, ~5.5 GB, leaving ~10 GB of KV cache per GPU), vLLM + LMCache
+# from lmcache/vllm-openai:v0.5.6 (the LMCache version the cost model was
+# calibrated with). Results from this profile are REAL-GPU results; keep them
+# apart from the simulated profiles.
+controlPlaneScheduling:
+  nodeSelector: {anton.dev/role: system, node-role.kubernetes.io/control-plane: null}   # null drops the chart default (Helm merges maps)
+  tolerations: []
+inference:
+  backend: vllm
+  replicas: 2                      # one per GPU node
+  preStopSeconds: 20
+  vllm:
+    image: lmcache/vllm-openai:v0.5.6
+    model: Qwen/Qwen2.5-7B-Instruct-AWQ
+    servedModelName: qwen2.5-7b
+    maxModelLen: 32768
+    gpuMemoryUtilization: 0.90
+    toolCallParser: hermes
+    nodeSelector: {anton.dev/gpu: "true"}
+    tolerations:
+      - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+    lmcache:
+      chunkSize: 256
+      localCpuGB: 8
+      serverMemory: 10Gi
+      serverCommand: [lmcache_server, 0.0.0.0, "65432"]
+  # Rates for the cost model until this hardware is measured in the run
+  # itself (same model family; replaced by the run's own calibration).
+  sim:
+    PREFILL_CURVE: "1000:0.2475,2000:0.4922,4000:1.0277,8000:2.1659,16000:4.8260,32000:11.7153"
+    PREFILL_MS_PER_TOKEN: "0.3016"
+    BYTES_PER_TOKEN: "57344"
+    OFFLOAD_BYTES_PER_SEC: "1283000000"
+    RESTORE_BYTES_PER_SEC: "627000000"
+    FIRST_TOKEN_MS: "30"
+    CAPACITY_TOKENS: "180000"
+    CONCURRENCY: "4"
+sandbox:
+  agent: opencode
+  model: qwen2.5-7b
+  # Sandboxes share the GPU nodes, so losing a node takes out agents and a
+  # replica together, as it would in production.
+  tolerateTaints: [nvidia.com/gpu]
+  workspace: pvc
+  storageClassName: do-block-storage
+  snapshotClassName: do-block-storage
+postgres:
+  mode: cnpg
+monitoring:
+  enabled: false

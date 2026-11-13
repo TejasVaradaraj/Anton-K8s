@@ -1,0 +1,14 @@
+# 4 replicas x 300k tokens = 1.2M tokens of cache: room for the full workload.
+--profile=qwen7b-a100
+--modes=plain,sandbox,routing,anton
+--sessions=24
+--ctx-min=8000
+--ctx-max=24000
+--grow-min=100
+--grow-max=400
+--ctx-cap=32000
+--duration=3m
+--replicas=4
+--spot-deadline=10s
+--hibernate=4
+--seeds=1,2,3

@@ -1,0 +1,14 @@
+# Sized to the L4's KV budget: 4 replicas x 50k tokens = 200k tokens of cache.
+--profile=qwen7b-l4
+--modes=plain,sandbox,routing,anton
+--sessions=10
+--ctx-min=4000
+--ctx-max=12000
+--grow-min=100
+--grow-max=400
+--ctx-cap=32000
+--duration=3m
+--replicas=4
+--spot-deadline=10s
+--hibernate=4
+--seeds=1,2,3

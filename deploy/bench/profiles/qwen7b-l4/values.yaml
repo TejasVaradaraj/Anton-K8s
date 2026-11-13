@@ -1,0 +1,13 @@
+# Qwen2.5-7B-Instruct on an NVIDIA L4 (24 GB), measured with vLLM 0.33 +
+# LMCache 0.5.6: bench/calibration_vllm_qwen7b.json.
+inference:
+  sim:
+    PREFILL_CURVE: "1000:0.2475,2000:0.4922,4000:1.0277,8000:2.1659,16000:4.8260,32000:11.7153"
+    PREFILL_MS_PER_TOKEN: "0.3016"        # 16k row; only shown, the curve is used
+    BYTES_PER_TOKEN: "57344"              # 28 layers x 4 KV heads x 128 x K,V x fp16
+    OFFLOAD_BYTES_PER_SEC: "1283000000"   # 16k row: 917.5 MB in 0.715 s
+    RESTORE_BYTES_PER_SEC: "627000000"    # 16k row: 917.5 MB in 1.463 s
+    FIRST_TOKEN_MS: "30"
+    # 24 GB x 0.85 vLLM budget - 15.2 GB weights - ~1 GB activations = ~2.9 GB of KV
+    CAPACITY_TOKENS: "50000"
+    CONCURRENCY: "4"

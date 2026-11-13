@@ -1,0 +1,43 @@
+{
+ "model": "Qwen/Qwen2.5-1.5B-Instruct",
+ "stack": "vLLM 0.33.0 + LMCache 0.5.6 (CPU backend), fp16, torch 2.14.0",
+ "gpu": "NVIDIA L4",
+ "source": "bench/vllm_lmcache_calibrate.ipynb, run on Colab 2026-11-12",
+ "rows": [
+  {
+   "tokens": 1000,
+   "prefill_s": 0.05345115799991618,
+   "kv_bytes": 28672000,
+   "offload_s": 0.034987715000056596,
+   "restore_s": 0.07323252100002264
+  },
+  {
+   "tokens": 2000,
+   "prefill_s": 0.11302185099998496,
+   "kv_bytes": 57344000,
+   "offload_s": 0.07883235100007369,
+   "restore_s": 0.13605830300002708
+  },
+  {
+   "tokens": 4000,
+   "prefill_s": 0.24270647800005918,
+   "kv_bytes": 114688000,
+   "offload_s": 0.15828876599994146,
+   "restore_s": 0.25923106400000506
+  },
+  {
+   "tokens": 8000,
+   "prefill_s": 0.5468624809999483,
+   "kv_bytes": 229376000,
+   "offload_s": 0.33831761900000856,
+   "restore_s": 0.5230980910000653
+  },
+  {
+   "tokens": 16000,
+   "prefill_s": 1.3129326810000066,
+   "kv_bytes": 458752000,
+   "offload_s": 0.6443342520000215,
+   "restore_s": 1.0182183319999467
+  }
+ ]
+}

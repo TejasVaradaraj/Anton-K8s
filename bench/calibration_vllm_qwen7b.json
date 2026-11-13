@@ -1,0 +1,52 @@
+{
+ "model": "Qwen/Qwen2.5-7B-Instruct",
+ "stack": "vLLM 0.33.0 + LMCache 0.5.6 (CPU backend), fp16, torch 2.14.0",
+ "gpu": "NVIDIA L4",
+ "source": "bench/vllm_lmcache_calibrate.ipynb, run on Colab 2026-11-12",
+ "rows": [
+  {
+   "tokens": 1000,
+   "prefill_s": 0.2475232159999905,
+   "kv_bytes": 57344000,
+   "offload_s": 0.0454126610000003,
+   "restore_s": 0.15416752100009035
+  },
+  {
+   "tokens": 2000,
+   "prefill_s": 0.4921640210000078,
+   "kv_bytes": 114688000,
+   "offload_s": 0.08546931299997595,
+   "restore_s": 0.24067937899997105
+  },
+  {
+   "tokens": 4000,
+   "prefill_s": 1.027674624000042,
+   "kv_bytes": 229376000,
+   "offload_s": 0.18919643699996413,
+   "restore_s": 0.41576113599990094
+  },
+  {
+   "tokens": 8000,
+   "prefill_s": 2.1658849609999606,
+   "kv_bytes": 458752000,
+   "offload_s": 0.3725122890000421,
+   "restore_s": 0.7646401189999779
+  },
+  {
+   "tokens": 16000,
+   "prefill_s": 4.825969375,
+   "kv_bytes": 917504000,
+   "offload_s": 0.7150370539999358,
+   "restore_s": 1.4633147299999791
+  },
+  {
+   "tokens": 32000,
+   "prefill_s": 11.71534644999997,
+   "kv_bytes": 1835008000,
+   "offload_s": 1.4411304640000253,
+   "restore_s": null,
+   "restore_s_raw": 0.10097632400004386,
+   "note": "restore discarded: 0.10 s for 1.8 GB (18 GB/s) is the time of a GPU prefix-cache hit, so vLLM's GPU copy was not actually dropped; every other row restores at 0.4-0.6 GB/s"
+  }
+ ]
+}

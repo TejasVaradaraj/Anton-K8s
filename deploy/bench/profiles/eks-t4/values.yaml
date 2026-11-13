@@ -1,0 +1,56 @@
+# REAL GPUs on AWS: 2x g4dn.xlarge spot (1x T4 16 GB, 4 vCPU, 16 GiB RAM each),
+# Qwen2.5-7B-Instruct AWQ (4-bit weights, ~5.5 GB: the fp16 model's 15.2 GB
+# does not fit a T4), vLLM + LMCache from lmcache/vllm-openai:v0.5.6.
+# Fallback for when L4 spot has no capacity (2026-11-13: placement score 1 of
+# 10 for g6.xlarge, 9 for g4dn.xlarge in us-east-2). Run with
+#   GPU_TYPE=g4dn.xlarge PROFILE=eks-t4 deploy/eks/run.sh
+# The cost model below is NOT calibrated for this GPU and model (the rates are
+# the L4 fp16 ones); label results "7B-AWQ on T4" and keep them apart from the
+# L4 numbers and from the simulated profiles.
+controlPlaneScheduling:
+  nodeSelector: {anton.dev/role: system, node-role.kubernetes.io/control-plane: null}   # null drops the chart default (Helm merges maps)
+  tolerations: []
+inference:
+  backend: vllm
+  replicas: 2                        # one per GPU node (spot quota: 8 vCPUs = 2x g4dn.xlarge)
+  preStopSeconds: 20
+  terminationGracePeriodSeconds: 60
+  vllm:
+    image: lmcache/vllm-openai:v0.5.6
+    model: Qwen/Qwen2.5-7B-Instruct-AWQ
+    servedModelName: qwen2.5-7b
+    maxModelLen: 32768
+    gpuMemoryUtilization: 0.90       # roughly 8-9 GB of KV after ~5.5 GB of weights (estimate, not measured)
+    toolCallParser: hermes
+    requests: {cpu: "2", memory: 9Gi}   # g4dn.xlarge has 16 GiB; leaves room for sandboxes
+    nodeSelector: {anton.dev/gpu: "true"}
+    tolerations:
+      - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+    lmcache:
+      chunkSize: 256
+      localCpuGB: 2                  # small host RAM; the remote tier carries the rest
+      serverMemory: 8Gi
+      serverCommand: [lmcache_server, 0.0.0.0, "65432"]
+  # Borrowed rates: measured on an L4 with the fp16 model
+  # (bench/calibration_vllm_qwen7b.json), not on a T4 with AWQ. Replace after
+  # running bench/vllm_lmcache_calibrate.ipynb on a T4.
+  sim:
+    PREFILL_CURVE: "1000:0.2475,2000:0.4922,4000:1.0277,8000:2.1659,16000:4.8260,32000:11.7153"
+    PREFILL_MS_PER_TOKEN: "0.3016"
+    BYTES_PER_TOKEN: "57344"
+    OFFLOAD_BYTES_PER_SEC: "1283000000"
+    RESTORE_BYTES_PER_SEC: "627000000"
+    FIRST_TOKEN_MS: "30"
+    CAPACITY_TOKENS: "150000"
+    CONCURRENCY: "4"
+sandbox:
+  agent: opencode
+  model: qwen2.5-7b
+  tolerateTaints: [nvidia.com/gpu]   # agents share GPU nodes: a node loss hits both
+  workspace: pvc
+  storageClassName: anton-gp3
+  snapshotClassName: anton-ebs
+postgres:
+  mode: cnpg
+monitoring:
+  enabled: false

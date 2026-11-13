@@ -1,0 +1,52 @@
+{
+ "model": "Qwen/Qwen2.5-7B-Instruct",
+ "stack": "vLLM 0.33.0 + LMCache 0.5.6 (CPU backend, chunk 256), fp16, torch 2.14.0",
+ "gpu": "NVIDIA A100-SXM4-40GB",
+ "source": "bench/vllm_lmcache_calibrate.ipynb, run on Colab 2026-11-12",
+ "rows": [
+  {
+   "tokens": 1000,
+   "prefill_s": 0.08204585700002553,
+   "kv_bytes": 57344000,
+   "offload_s": 0.03617243699989103,
+   "restore_s": 0.09656242400001247
+  },
+  {
+   "tokens": 2000,
+   "prefill_s": 0.12590328500004944,
+   "kv_bytes": 114688000,
+   "offload_s": 0.0796001559999695,
+   "restore_s": 0.18045169499998792
+  },
+  {
+   "tokens": 4000,
+   "prefill_s": 0.25438844300003893,
+   "kv_bytes": 229376000,
+   "offload_s": 0.16740413499996976,
+   "restore_s": 0.3564504080000006
+  },
+  {
+   "tokens": 8000,
+   "prefill_s": 0.5256571259999419,
+   "kv_bytes": 458752000,
+   "offload_s": 0.34550822200003495,
+   "restore_s": 0.7044786560001057
+  },
+  {
+   "tokens": 16000,
+   "prefill_s": 1.1685442220000368,
+   "kv_bytes": 917504000,
+   "offload_s": 0.7338094089999458,
+   "restore_s": 1.410280657000044
+  },
+  {
+   "tokens": 32000,
+   "prefill_s": 2.9244796549999137,
+   "kv_bytes": 1835008000,
+   "offload_s": 1.3673467940001274,
+   "restore_s": null,
+   "restore_s_raw": 0.049660978000019895,
+   "note": "restore discarded: 0.05 s for 1.8 GB is impossible on this path (other rows: ~0.65 GB/s). It recurred with the GPU prefix-cache reset verified, so the cause is still unknown; the 32k request may have been served without a real restore."
+  }
+ ]
+}
