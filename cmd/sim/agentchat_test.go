@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/TejasVaradaraj/anton-platform/internal/openai"
 )
@@ -135,5 +137,39 @@ func TestBuiltinSystemPromptIsMostlyPerSession(t *testing.T) {
 	}
 	if pa != newBuiltinAgent(t.TempDir(), "http://x", "s-a").systemPrompt() {
 		t.Fatal("the same session must get the same prompt again")
+	}
+}
+
+// A turn that starts while the router is restarting waits for it; an answer
+// from the router, even an error, is final and is not retried.
+func TestPostRetryingDialWaitsForTheServer(t *testing.T) {
+	var hits atomic.Int32
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "no replica", http.StatusBadGateway)
+	})
+	srv := httptest.NewUnstartedServer(h)
+	addr := srv.Listener.Addr().String()
+	srv.Listener.Close() // nothing listens yet: connections are refused
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return
+		}
+		srv.Listener = l
+		srv.Start()
+	}()
+	defer srv.Close()
+	resp, err := postRetryingDial("http://"+addr+"/x", []byte("{}"), 10*time.Second)
+	if err != nil {
+		t.Fatalf("did not wait for the server: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || hits.Load() != 1 {
+		t.Fatalf("status %d after %d requests, want one 502 (an answered request is not retried)", resp.StatusCode, hits.Load())
+	}
+	if _, err := postRetryingDial("http://127.0.0.1:1/x", []byte("{}"), 1500*time.Millisecond); err == nil {
+		t.Fatal("a server that never comes up must still fail after the wait")
 	}
 }

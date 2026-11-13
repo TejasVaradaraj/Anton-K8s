@@ -18,9 +18,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -151,7 +153,7 @@ func (a *builtinAgent) chat(text string) (chatReply, error) {
 	body, _ := json.Marshal(map[string]any{"model": a.model, "messages": msgs, "max_tokens": 256})
 
 	start := time.Now()
-	resp, err := http.Post(a.router+"/s/"+a.session+"/v1/chat/completions", "application/json", bytes.NewReader(body))
+	resp, err := postRetryingDial(a.router+"/s/"+a.session+"/v1/chat/completions", body, 45*time.Second)
 	if err != nil {
 		return chatReply{}, err
 	}
@@ -450,5 +452,22 @@ func handleChat(b chatBackend) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
+	}
+}
+
+// postRetryingDial posts a JSON body, retrying for up to `wait` while the
+// server cannot be reached at all. The router restarts when a new team's
+// namespace appears (it must rebuild its cache); a turn that starts in that
+// window should wait a few seconds, not fail. Only connection failures are
+// retried: once the router has answered, the request is never sent twice.
+func postRetryingDial(url string, body []byte, wait time.Duration) (*http.Response, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+		var op *net.OpError
+		if err == nil || !errors.As(err, &op) || op.Op != "dial" || time.Now().After(deadline) {
+			return resp, err
+		}
+		time.Sleep(time.Second)
 	}
 }
