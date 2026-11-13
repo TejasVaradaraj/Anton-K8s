@@ -1,0 +1,10 @@
+.git
+results
+**/node_modules
+**/.next
+web/out
+*.pem
+**/__pycache__
+# iCloud sync conflict copies ("file 2.ts")
+**/* [0-9].*
+**/* [0-9]

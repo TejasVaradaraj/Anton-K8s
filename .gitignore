@@ -1,0 +1,30 @@
+bin/
+*.pem
+.env
+node_modules
+.next/
+__pycache__/
+.DS_Store
+deploy/aws/.instance
+deploy/aws/.ip
+out/
+*.db
+.venv/
+.pytest_cache/
+# iCloud sync conflict copies ("file 2.ts")
+* [0-9].*
+* [0-9]
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Private handoff and generated run artifacts
+HANDOFF.md
+results/
+*.tsbuildinfo
+.env.*
+*.key
+*.p12
+*.pfx
+.go-cache/
