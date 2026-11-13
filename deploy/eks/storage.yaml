@@ -1,0 +1,18 @@
+# EBS gp3 for workspace volumes, and the snapshot class Anton hibernates with.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: anton-gp3
+  # The default: Postgres (CloudNativePG) asks for a volume without naming a class.
+  annotations: {storageclass.kubernetes.io/is-default-class: "true"}
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters: {type: gp3}
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: anton-ebs
+driver: ebs.csi.aws.com
+deletionPolicy: Delete
