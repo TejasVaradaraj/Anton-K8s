@@ -30,9 +30,12 @@ type Request struct {
 	Stream    bool      `json:"stream,omitempty"`
 	MaxTokens int       `json:"max_tokens,omitempty"`
 	// The newer spelling of max_tokens; clients send one or the other.
-	MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
-	SessionID           string `json:"session_id,omitempty"`
-	ContextTokens       int64  `json:"context_tokens,omitempty"`
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+	// vLLM partitions its prefix cache by this value. With tenancy on, the
+	// router sets it to the session's team so two teams never share KV blocks.
+	CacheSalt     string `json:"cache_salt,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	ContextTokens int64  `json:"context_tokens,omitempty"`
 }
 
 func (r *Request) IsChat() bool { return len(r.Messages) > 0 }
@@ -109,4 +112,24 @@ type Usage struct {
 	PromptTokensDetails *struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details,omitempty"`
+}
+
+// WithCacheSalt returns the JSON request body with cache_salt set, leaving
+// every other field as the client sent it. A body that is not a JSON object
+// is returned unchanged.
+func WithCacheSalt(body []byte, salt string) []byte {
+	if salt == "" {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil || m == nil {
+		return body
+	}
+	v, _ := json.Marshal(salt)
+	m["cache_salt"] = v
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }

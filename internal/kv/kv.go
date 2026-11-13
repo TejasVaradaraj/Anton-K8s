@@ -59,6 +59,9 @@ type Block struct {
 	// LMCache keys KV blocks by token content, so a replica that never saw the
 	// session can prefetch its cache from these IDs.
 	TokenIDs []int `json:"token_ids,omitempty"`
+	// CacheSalt is the vLLM cache_salt the session's requests carried; a
+	// prefetch must use the same one or it warms a different partition.
+	CacheSalt string `json:"cache_salt,omitempty"`
 }
 
 var ErrNotFound = errors.New("not found")

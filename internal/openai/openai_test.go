@@ -54,3 +54,23 @@ func TestEstimateTokensHandlesStringsAndParts(t *testing.T) {
 		t.Fatal("IsChat")
 	}
 }
+
+func TestWithCacheSaltKeepsEverythingElse(t *testing.T) {
+	body := []byte(`{"model":"m","stream":true,"tools":[{"type":"function"}],"cache_salt":"spoofed","messages":[{"role":"user","content":"hi"}]}`)
+	out := WithCacheSalt(body, "team-a")
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if string(m["cache_salt"]) != `"team-a"` {
+		t.Fatalf("cache_salt = %s, want the team (a client must not pick its own)", m["cache_salt"])
+	}
+	for _, k := range []string{"model", "stream", "tools", "messages"} {
+		if _, ok := m[k]; !ok {
+			t.Fatalf("field %q was dropped", k)
+		}
+	}
+	if string(WithCacheSalt(body, "")) != string(body) || string(WithCacheSalt([]byte("not json"), "x")) != "not json" {
+		t.Fatal("an empty salt or a non-JSON body must leave the body unchanged")
+	}
+}

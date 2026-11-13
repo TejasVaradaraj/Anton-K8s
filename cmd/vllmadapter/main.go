@@ -43,6 +43,7 @@ import (
 )
 
 type session struct {
+	salt   string
 	tokens []int
 	last   time.Time
 	hits   int
@@ -166,10 +167,10 @@ func (a *adapter) chat(w http.ResponseWriter, r *http.Request) {
 	if json.Unmarshal(tail.Bytes(), &out) == nil && out.Usage.PromptTokensDetails != nil {
 		hit = out.Usage.PromptTokensDetails.CachedTokens > 0
 	}
-	go a.record(sid, in.Messages, hit)
+	go a.record(sid, in.CacheSalt, in.Messages, hit)
 }
 
-func (a *adapter) record(sid string, msgs []openai.Message, hit bool) {
+func (a *adapter) record(sid, salt string, msgs []openai.Message, hit bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	ids, err := a.tokenize(ctx, msgs)
@@ -184,7 +185,7 @@ func (a *adapter) record(sid string, msgs []openai.Message, hit bool) {
 		s = &session{}
 		a.sessions[sid] = s
 	}
-	s.tokens, s.last = ids, time.Now()
+	s.tokens, s.last, s.salt = ids, time.Now(), salt
 	if hit {
 		s.hits++
 	}
@@ -240,8 +241,10 @@ func (a *adapter) offload(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	s := a.sessions[in.SessionID]
 	var ids []int
+	salt := ""
 	if s != nil {
 		ids = append(ids, s.tokens...)
+		salt = s.salt
 	}
 	if in.Delete {
 		delete(a.sessions, in.SessionID) // vLLM frees GPU blocks itself under pressure
@@ -253,7 +256,7 @@ func (a *adapter) offload(w http.ResponseWriter, r *http.Request) {
 	}
 	n := int64(len(ids))
 	err := kv.Do(r.Context(), http.MethodPut, a.tier+"/blocks/"+in.SessionID,
-		kv.Block{Tokens: n, Bytes: n * a.bytesPerToken, TokenIDs: ids}, nil)
+		kv.Block{Tokens: n, Bytes: n * a.bytesPerToken, TokenIDs: ids, CacheSalt: salt}, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -282,7 +285,11 @@ func (a *adapter) restore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tier has no token IDs for this session", http.StatusNotFound)
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"model": a.model, "prompt": b.TokenIDs, "max_tokens": 1, "temperature": 0})
+	prefetch := map[string]any{"model": a.model, "prompt": b.TokenIDs, "max_tokens": 1, "temperature": 0}
+	if b.CacheSalt != "" {
+		prefetch["cache_salt"] = b.CacheSalt
+	}
+	body, _ := json.Marshal(prefetch)
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, a.vllm+"/v1/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)

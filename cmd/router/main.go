@@ -24,6 +24,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -46,6 +47,7 @@ import (
 )
 
 type router struct {
+	tenancy     bool // sessions live in team namespaces; requests carry the team as cache_salt
 	c           client.Client
 	msPerToken  float64
 	curve       *prefill.Curve
@@ -65,23 +67,51 @@ func main() {
 	eppAddr := flag.String("epp-addr", ":9002", "gRPC address for the Gateway API Inference Extension endpoint picker (empty disables it)")
 	curveFlag := flag.String("prefill-curve", "", "measured prefill seconds by context, tokens:seconds,... (overrides --prefill-ms-per-token)")
 	concurrency := flag.Int("replica-concurrency", 4, "requests a replica serves at once")
+	tenancy := flag.Bool("tenancy", false, "sessions live in team namespaces (anton-team-<team>); requests carry the team as vLLM's cache_salt")
 	flag.Parse()
 	ctrl.SetLogger(zap.New())
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = v1.AddToScheme(scheme)
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg := ctrl.GetConfigOrDie()
+	// Namespaced RBAC: watch Anton's namespace and, with tenancy on, the team
+	// namespaces whose RoleBinding for the router already exists.
+	namespaces := map[string]cache.Config{common.Namespace: {}}
+	var direct client.Client
+	routerBound := func(ns string) bool {
+		var rb rbacv1.RoleBinding
+		return direct.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "anton-tenant-router-anton-router"}, &rb) == nil
+	}
+	if *tenancy {
+		var err error
+		if direct, err = client.New(cfg, client.Options{Scheme: scheme}); err != nil {
+			ctrl.Log.Error(err, "client")
+			os.Exit(1)
+		}
+		tenants, err := common.TenantNamespaces(context.Background(), direct)
+		if err != nil {
+			ctrl.Log.Error(err, "listing team namespaces")
+			os.Exit(1)
+		}
+		for _, ns := range tenants {
+			if routerBound(ns) {
+				namespaces[ns] = cache.Config{}
+			}
+		}
+		ctrl.Log.Info("tenancy on", "namespaces", len(namespaces))
+	}
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"},
-		// Namespaced RBAC: watch only Anton's namespace.
-		Cache: cache.Options{DefaultNamespaces: map[string]cache.Config{common.Namespace: {}}},
+		Cache: cache.Options{DefaultNamespaces: namespaces},
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "manager")
 		os.Exit(1)
 	}
 	rt := &router{
-		c: mgr.GetClient(), msPerToken: *msPerToken, curve: prefill.MustParse(*curveFlag), concurrency: *concurrency,
+		tenancy: *tenancy,
+		c:       mgr.GetClient(), msPerToken: *msPerToken, curve: prefill.MustParse(*curveFlag), concurrency: *concurrency,
 		assign: map[string]string{}, seenRV: map[string]string{}, lastTouch: map[string]time.Time{},
 		inflight: map[string]int{}, ewmaMs: map[string]float64{},
 	}
@@ -100,7 +130,16 @@ func main() {
 	// Added as a Runnable so it starts only after the informer cache has synced.
 	_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		srv := &http.Server{Addr: *addr, Handler: mux}
-		go func() { <-ctx.Done(); srv.Close() }()
+		go func() {
+			<-ctx.Done()
+			// Let streams that are in flight finish (a restart for a new team
+			// namespace must not cut an agent's reply short).
+			grace, stop := context.WithTimeout(context.Background(), 60*time.Second)
+			defer stop()
+			if srv.Shutdown(grace) != nil {
+				srv.Close()
+			}
+		}()
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
@@ -120,7 +159,37 @@ func main() {
 			return gs.Serve(lis)
 		}))
 	}
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	ctx, cancel := context.WithCancel(ctrl.SetupSignalHandler())
+	defer cancel()
+	if *tenancy {
+		// A team created after start-up is outside the cache. When its
+		// namespace is provisioned, stop; the Deployment restarts the router,
+		// which then watches it. In-flight responses get the server's
+		// shutdown grace period below.
+		_ = mgr.Add(manager.RunnableFunc(func(c context.Context) error {
+			t := time.NewTicker(10 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-c.Done():
+					return nil
+				case <-t.C:
+				}
+				tenants, err := common.TenantNamespaces(c, direct)
+				if err != nil {
+					continue
+				}
+				for _, ns := range tenants {
+					if _, ok := namespaces[ns]; !ok && routerBound(ns) {
+						ctrl.Log.Info("new team namespace provisioned: restarting to watch it", "namespace", ns)
+						cancel()
+						return nil
+					}
+				}
+			}
+		}))
+	}
+	if err := mgr.Start(ctx); err != nil {
 		ctrl.Log.Error(err, "run")
 		os.Exit(1)
 	}
@@ -146,6 +215,14 @@ func (rt *router) handle(w http.ResponseWriter, req *http.Request) {
 		raw, _ = json.Marshal(view)
 	}
 	ctx := req.Context()
+	if rt.tenancy && in.IsChat() {
+		// Shared replicas, separate caches: vLLM keys its prefix cache by
+		// token content, so without a salt one team could detect another's
+		// prompt by timing. The salt is the team, whatever the client sent.
+		if s, ok := rt.session(ctx, sid); ok && s.Spec.Team != "" {
+			raw = openai.WithCacheSalt(raw, s.Spec.Team)
+		}
+	}
 	mode := rt.mode(ctx)
 
 	start := time.Now()
@@ -253,9 +330,11 @@ func (rt *router) models(w http.ResponseWriter, req *http.Request) {
 func msSince(t time.Time) float64 { return float64(time.Since(t).Microseconds()) / 1000 }
 
 func (rt *router) session(ctx context.Context, name string) (*v1.AgentSession, bool) {
-	var s v1.AgentSession
-	err := rt.c.Get(ctx, types.NamespacedName{Namespace: common.Namespace, Name: name}, &s)
-	return &s, err == nil
+	s, err := common.FindSession(ctx, rt.c, name)
+	if err != nil {
+		return &v1.AgentSession{}, false
+	}
+	return s, true
 }
 
 // awaitActive is the activator: a request to a hibernated session flips it
