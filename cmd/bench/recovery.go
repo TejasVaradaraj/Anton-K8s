@@ -158,7 +158,28 @@ func runRecovery(ctx context.Context, mode string) recoveryResult {
 		r, s := checkSessions(ctx, disrupted, snap, map[string]bool{node: true}, start, &res)
 		resume, recoverSecs = append(resume, r...), append(recoverSecs, s...)
 	}
-	if *recSequential {
+	if *chaos == "external" {
+		// Something outside the benchmark takes a node away (a real spot
+		// interruption sent by AWS FIS; Karpenter then drains the node). The
+		// load scenario cannot be used for this on real vLLM: it sends the
+		// simulator's session_id/context_tokens shorthand, which only the mock
+		// understands. Here the agents hold real conversations.
+		log.Printf("RECOVERY waiting for an external disruption (up to %s)", *externalWait)
+		node := ""
+		_ = waitFor(ctx, "an external disruption", *externalWait, func() bool {
+			node = externallyDisruptedNode(ctx, replicaNodes)
+			return node != ""
+		})
+		if node == "" {
+			res.Errors = append(res.Errors, "no external disruption arrived")
+		} else {
+			disrupted := sessionsOn(before, node)
+			res.Disrupted += len(disrupted)
+			log.Printf("RECOVERY external %s (%d sandboxes)", node, len(disrupted))
+			r, s := checkSessions(ctx, disrupted, before, map[string]bool{node: true}, time.Now(), &res)
+			resume, recoverSecs = append(resume, r...), append(recoverSecs, s...)
+		}
+	} else if *recSequential {
 		// Two disruptions one after another, so a 2-GPU cluster always has a
 		// surviving node to land on: drain A, bring it back, then kill B.
 		if len(nodes) > 0 {
@@ -203,6 +224,40 @@ func runRecovery(ctx context.Context, mode string) recoveryResult {
 	res.ResumeP50Ms, res.ResumeP95Ms = pct(resume, 50), pct(resume, 95)
 	res.RecoverySecondsP50 = pct(recoverSecs, 50)
 	return res
+}
+
+// externallyDisruptedNode returns a replica node that something else is taking
+// away: the node is gone, being deleted, cordoned or tainted by Karpenter's
+// disruption flow, or its replica pod is terminating.
+func externallyDisruptedNode(ctx context.Context, replicaNodes map[string]bool) string {
+	for _, p := range replicaPods(ctx) {
+		if p.DeletionTimestamp != nil && replicaNodes[p.Spec.NodeName] {
+			return p.Spec.NodeName
+		}
+	}
+	names := make([]string, 0, len(replicaNodes))
+	for n := range replicaNodes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		var n corev1.Node
+		if err := c.Get(ctx, types.NamespacedName{Name: name}, &n); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				return name
+			}
+			continue
+		}
+		if n.DeletionTimestamp != nil || n.Spec.Unschedulable {
+			return name
+		}
+		for _, t := range n.Spec.Taints {
+			if strings.HasPrefix(t.Key, "karpenter.sh/disrupt") {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 func snapshotSandboxes(ctx context.Context, names []string) map[string]sandboxSnapshot {

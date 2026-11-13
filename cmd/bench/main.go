@@ -54,6 +54,7 @@ var (
 	replicaWait   = flag.Duration("replica-timeout", 3*time.Minute, "how long to wait for fresh replicas (real vLLM loads a model: use ~20m)")
 	scenario      = flag.String("scenario", "load", "load: the chaos benchmark; recovery: real agent conversations through node loss")
 	recTurns      = flag.Int("recovery-turns", 3, "recovery: agent turns before the disruption")
+	externalWait  = flag.Duration("external-wait", 15*time.Minute, "recovery with --chaos=external: how long to wait for the disruption")
 	recSequential = flag.Bool("recovery-sequential", false, "recovery: drain one node, bring it back, then kill another (fits 2-node GPU clusters)")
 	profile       = flag.String("profile", "", "label recorded with every result, e.g. qwen7b-l4")
 	drainReturn   = flag.Duration("drain-return", 30*time.Second, "a drained node comes back (uncordoned) after this long")
@@ -139,7 +140,12 @@ func main() {
 			fmt.Printf("ANTON_RECOVERY %s\n", b)
 			rs = append(rs, r)
 		}
-		must(reset(ctx, common.ModeAnton))
+		// After a real interruption the cluster is one replica short until the
+		// replacement node has pulled its image and loaded the model; waiting
+		// for a full reset there cost 19 GPU-minutes for nothing (2026-11-13).
+		if *chaos != "external" {
+			must(reset(ctx, common.ModeAnton))
+		}
 		printRecovery(rs)
 		return
 	}
@@ -230,6 +236,36 @@ func reset(ctx context.Context, mode string) error {
 		return c.List(ctx, &l, client.InNamespace(common.Namespace)) == nil && len(l.Items) == 0
 	}); err != nil {
 		return err
+	}
+	// Real vLLM: start every mode with an empty shared LMCache server. It
+	// keeps every chunk in memory with no cap, so three modes of sessions
+	// with 11k-token prompts filled the 16 GiB system node and took the whole
+	// control plane down (EKS, 2026-11-13). No such pods exist with the mock.
+	var lm corev1.PodList
+	if c.List(ctx, &lm, client.InNamespace(common.Namespace), client.MatchingLabels{"app": "anton-lmcache"}) == nil && len(lm.Items) > 0 {
+		old := map[string]bool{}
+		for _, p := range lm.Items {
+			old[p.Name] = true
+		}
+		_ = c.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(common.Namespace), client.MatchingLabels{"app": "anton-lmcache"})
+		if err := waitFor(ctx, "a fresh LMCache server", 10*time.Minute, func() bool {
+			var now corev1.PodList
+			if c.List(ctx, &now, client.InNamespace(common.Namespace), client.MatchingLabels{"app": "anton-lmcache"}) != nil {
+				return false
+			}
+			ready := 0
+			for i := range now.Items {
+				if old[now.Items[i].Name] {
+					return false
+				}
+				if common.PodReady(&now.Items[i]) {
+					ready++
+				}
+			}
+			return ready > 0
+		}); err != nil {
+			return err
+		}
 	}
 	var nodes corev1.NodeList
 	_ = c.List(ctx, &nodes)
