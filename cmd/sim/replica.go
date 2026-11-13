@@ -37,6 +37,7 @@ type replica struct {
 	decodeMs    float64
 	capacity    int64
 	concurrency int
+	maxModelLen int64 // prompt + requested output must fit (vLLM --max-model-len)
 
 	mu        sync.Mutex
 	cache     map[string]*entry
@@ -67,6 +68,7 @@ func runReplica() {
 		decodeMs:    envFloat("FIRST_TOKEN_MS", 30),
 		capacity:    int64(envFloat("CAPACITY_TOKENS", 600_000)),
 		concurrency: int(envFloat("CONCURRENCY", 4)),
+		maxModelLen: int64(envFloat("MAX_MODEL_LEN", 32768)),
 		cache:       map[string]*entry{},
 	}
 	if c, err := prefill.Parse(envStr("PREFILL_CURVE", "")); err != nil {
@@ -101,6 +103,14 @@ func (r *replica) complete(w http.ResponseWriter, req *http.Request) {
 	session, ctxTokens := in.SessionID, in.ContextTokens
 	if in.IsChat() {
 		session, ctxTokens = openai.Session(req, &in), openai.EstimateTokens(in.Messages)
+	}
+	// Like vLLM: the prompt plus the requested output must fit the model's
+	// window. The mock used to accept anything, so a client asking for 32000
+	// output tokens passed every rehearsal and failed on the real server.
+	if maxOut := int64(max(in.MaxTokens, in.MaxCompletionTokens)); in.IsChat() && r.maxModelLen > 0 && maxOut+ctxTokens > r.maxModelLen {
+		http.Error(w, fmt.Sprintf(`{"error":{"message":"This model's maximum context length is %d tokens. However, you requested %d output tokens and your prompt contains at least %d input tokens.","type":"BadRequestError","code":400}}`,
+			r.maxModelLen, maxOut, ctxTokens), http.StatusBadRequest)
+		return
 	}
 	if session == "" || ctxTokens <= 0 {
 		http.Error(w, "need a session (X-Session-ID, /s/{session}/ or session_id) and a prompt", http.StatusBadRequest)

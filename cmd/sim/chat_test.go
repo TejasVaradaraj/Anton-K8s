@@ -113,3 +113,20 @@ func TestLegacyBenchmarkRequestsStillWork(t *testing.T) {
 		t.Fatalf("legacy response %s", w.Body.String())
 	}
 }
+
+// The mock must refuse what vLLM refuses: a request whose prompt plus
+// max_tokens does not fit the model window.
+func TestMockRejectsOutputThatDoesNotFitTheWindow(t *testing.T) {
+	r := &replica{name: "r", sem: make(chan struct{}, 1), maxModelLen: 32768}
+	for _, body := range []string{
+		`{"model":"m","max_tokens":32000,"messages":[{"role":"user","content":"` + strings.Repeat("word ", 2000) + `"}]}`,
+		`{"model":"m","max_completion_tokens":40000,"messages":[{"role":"user","content":"hi"}]}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/s/s1/v1/chat/completions", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		r.complete(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "maximum context length") {
+			t.Fatalf("want a 400 about the context length, got %d %s", w.Code, w.Body.String())
+		}
+	}
+}

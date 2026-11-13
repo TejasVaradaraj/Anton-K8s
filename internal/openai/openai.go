@@ -25,12 +25,14 @@ type Message struct {
 // Request is the subset of a chat-completions request Anton reads. Legacy
 // benchmark requests carry SessionID and ContextTokens instead of messages.
 type Request struct {
-	Model         string    `json:"model,omitempty"`
-	Messages      []Message `json:"messages,omitempty"`
-	Stream        bool      `json:"stream,omitempty"`
-	MaxTokens     int       `json:"max_tokens,omitempty"`
-	SessionID     string    `json:"session_id,omitempty"`
-	ContextTokens int64     `json:"context_tokens,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Messages  []Message `json:"messages,omitempty"`
+	Stream    bool      `json:"stream,omitempty"`
+	MaxTokens int       `json:"max_tokens,omitempty"`
+	// The newer spelling of max_tokens; clients send one or the other.
+	MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
+	SessionID           string `json:"session_id,omitempty"`
+	ContextTokens       int64  `json:"context_tokens,omitempty"`
 }
 
 func (r *Request) IsChat() bool { return len(r.Messages) > 0 }
