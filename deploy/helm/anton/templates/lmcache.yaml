@@ -13,8 +13,10 @@ data:
     chunk_size: {{ $v.lmcache.chunkSize }}
     local_cpu: true
     max_local_cpu_size: {{ $v.lmcache.localCpuGB }}
+    {{- if $v.lmcache.remote }}
     remote_url: "lm://anton-lmcache:65432"
     remote_serde: "naive"
+    {{- end }}
 ---
 # The shared LMCache server: the KV tier that survives node loss. Like the
 # Anton tier it runs on a node the chaos benchmark never disrupts.
@@ -37,7 +39,11 @@ spec:
           image: {{ $v.image }}
           command: {{- toYaml $v.lmcache.serverCommand | nindent 12 }}
           ports: [{containerPort: 65432}]
-          resources: {requests: {cpu: 500m, memory: {{ $v.lmcache.serverMemory }}}}
+          # The limit matters: the server keeps every chunk in memory with no
+          # cap, and without one it starves the node instead of being restarted.
+          resources:
+            requests: {cpu: 500m, memory: {{ $v.lmcache.serverMemory }}}
+            limits: {memory: {{ $v.lmcache.serverMemory }}}
 ---
 apiVersion: v1
 kind: Service

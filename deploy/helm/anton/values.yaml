@@ -57,6 +57,9 @@ inference:
     tolerations:
       - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
     lmcache:
+      # false = each replica keeps its KV cache to itself (no shared tier): the
+      # baseline that shows what the tier buys when a replica is lost.
+      remote: true
       chunkSize: 256
       localCpuGB: 8
       serverMemory: 24Gi

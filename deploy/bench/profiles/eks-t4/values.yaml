@@ -29,7 +29,7 @@ inference:
     lmcache:
       chunkSize: 256
       localCpuGB: 2                  # small host RAM; the remote tier carries the rest
-      serverMemory: 8Gi
+      serverMemory: 10Gi             # also its limit; one mode of 6 sessions with 11k-token prompts is about 5 GiB
       serverCommand: [lmcache_server, 0.0.0.0, "65432"]
   # Borrowed rates: measured on an L4 with the fp16 model
   # (bench/calibration_vllm_qwen7b.json), not on a T4 with AWQ. Replace after
