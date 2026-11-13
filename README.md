@@ -12,7 +12,7 @@ Anton ties both to one resource, `AgentSession`, and manages them through disrup
 
 ## Results
 
-Two kinds of numbers, kept apart: **measurements** of the real serving stack on real GPUs (section 1), and a **simulated chaos benchmark** whose replicas replay those measurements (section 2). Real-GPU Kubernetes results go in their own section once that run is done. Read the Limitations section before quoting either.
+Three kinds of numbers, kept apart: **measurements** of the real serving stack on real GPUs (section 1), a **simulated chaos benchmark** whose replicas replay those measurements (section 2), and a **real-GPU run on EKS** with real vLLM, LMCache and coding agents (section 3). Read the Limitations section before quoting any of them. The raw logs named below live in `results/`, which is kept out of this repository.
 
 ### 1. Measured: when does keeping a KV cache pay?
 
@@ -70,6 +70,39 @@ A100 rates, about 300k tokens of KV memory per replica, 24 sessions. Raw log: `r
 - Plain Kubernetes and sandbox-only lose a smaller share of caches in disruptions here (53 of 88 and 45 of 70), but they recompute about 9× more tokens per request than routing in steady state, so that share does not make them cheaper.
 
 An earlier A100 run (`results/superseded-bench-qwen7b-a100-20261112-193204.log`) and the first L4 run (`results/bench-qwen7b-l4-20261112-094309.log`) used a router that moved sessions off a leaving replica before it was gone and waited for rescues the guard had not started. Both bugs are fixed and tested (`cmd/router/pick_test.go`); those logs are kept only for the record. Earlier runs in `results/bench-20261112-*.log` used a calibration from plain Hugging Face transformers, about 4× slower than vLLM, and overstate Anton's benefit.
+
+### 3. Real GPUs on EKS: agents through a drain, a hard kill and a real spot interruption
+
+**These are real results from a small run.** EKS 1.37 in us-east-2, Karpenter, two `g4dn.xlarge` spot nodes (one T4 16 GB each), vLLM 0.31.0 + LMCache 0.5.6 serving Qwen2.5-7B-Instruct-AWQ, a shared LMCache server on a CPU node, EBS volumes for agent workspaces. 2026-11-13, one run per mode, 4 to 6 sessions each, no repeats. The model is the 4-bit AWQ build because the fp16 weights (15.2 GB) do not fit a T4, and L4 spot had no capacity. Scripted in `deploy/eks/run.sh` (profile `deploy/bench/profiles/eks-t4`); raw logs in `results/eks-20261113-*` and `results/bench-eks-t4-20261113-*`.
+
+**A coding agent works end to end.** OpenCode 1.19.5 in a sandbox, through the session router, on the real model: the first turn wrote `hello.py` with a real tool call (7,611 prompt tokens, none cached, 44 to 46 s); the second turn edited it with 7,696 of 7,722 prompt tokens served from the KV cache (4.2 s). Four separate clusters gave the same token counts.
+
+**Sessions survive losing their node.** Builtin agent, 6 sessions, each with about 11,600 prompt tokens of which all but the first 750 are its own (a per-session "repository"). A drain of one GPU node, then a hard kill of the other; separately, a real spot interruption sent by AWS FIS. Each figure is the first turn after the disruption, for sessions whose sandbox was on the lost node.
+
+| Disruption (Anton mode) | Sessions hit | Conversation intact | Next turn worked | Prompt tokens recomputed on that turn |
+|---|---|---|---|---|
+| Drain | 2 of 6 | 2 of 2 | 2 of 2 | 368 and 627 |
+| Hard kill | 3 of 6 | 3 of 3 | 3 of 3 | 622, 629 and 789 |
+| **Real AWS spot interruption** | 2 of 6 | 2 of 2 | 2 of 2 | 375 and 631 |
+
+On the spot interruption AWS sent the notice at 19:32:46; 16 seconds later Anton's guard had offloaded the dying replica's 3 session caches (1.89 GB, inside a 17.9 s budget). Sandboxes were back on another node in about 30 s (median), with their EBS workspaces. OpenCode sessions went through the same drain and hard kill in an earlier run the same day: 4 of 4 conversations intact and next turns working.
+
+**What the shared KV tier is worth.** The same drain and hard kill, comparing the first turn after a session lost its replica:
+
+| | Prompt tokens recomputed (of about 11,300) | Whole reply |
+|---|---|---|
+| Shared LMCache tier on: plain Kubernetes | 414 to 804 | 3.6 to 16.1 s |
+| Tier on: sandbox persistence only | 363 to 797 | 5.5 to 12.3 s |
+| Tier on: cache routing only | 370 to 796 | 6.5 to 17.3 s |
+| Tier on: **Anton** | 368 to 789 | 11.1 to 17.6 s |
+| **Tier off**, sessions pinned to a replica (4 sessions that lost theirs) | **10,374 to 11,158** | **51.5 to 56.1 s** |
+
+- **The tier is the difference: about 10,000 fewer prompt tokens and about 40 seconds per resumed turn** on a T4, for a session with an 11,000-token context of its own. A fifth session in the tier-off run kept its replica and recomputed 364 tokens.
+- **The four modes did not separate on real GPUs, and that is the honest reading.** With the tier on, plain Kubernetes recovered as well as Anton. LMCache writes KV chunks through to the shared server as they are computed, so a surviving replica fetches them whether or not anyone rescued them, and every mode here had EBS workspaces. The mode gap in section 2 comes from simulated replicas that save a cache only when asked. What this run shows for Anton is that its pieces work on real infrastructure (the session router in front of vLLM, the guard's rescue against a real interruption, sandboxes and workspaces moving between nodes), not that they beat a plain deployment that already has a shared tier.
+- **"Whole reply" is prefill plus 256 generated tokens**, not time to first token; do not compare it with section 2. The spread within a row is mostly queueing behind other sessions on the one surviving GPU.
+- **Small numbers.** Two to five sessions per row, one run each; these are observations, not rates.
+- An earlier run that night gave every session the same 6,000-token system prompt, which made every cache look warm on any replica; those logs (`bench-eks-t4-20261113-09*`, `-16*`) are kept but not used above.
+- The cost model's rates in this profile are borrowed from the L4 fp16 calibration; they were not measured on a T4.
 
 ## How it works
 
@@ -156,12 +189,12 @@ A session counts as having **lost KV state** when its first request after losing
 
 Read these before quoting any number.
 
-- **Inference is simulated in the cluster.** Replicas are mock servers that replay measured vLLM + LMCache timings (prefill curve, offload and restore rates, KV capacity) and track a per-session KV cache; no model runs inside the cluster. The measurements are real (section 1), but queueing, batching and memory effects inside a real vLLM server are only approximated.
+- **Inference is simulated in the cluster benchmark of section 2.** There, replicas are mock servers that replay measured vLLM + LMCache timings (prefill curve, offload and restore rates, KV capacity) and track a per-session KV cache; no model runs inside the cluster. The measurements are real (section 1), but queueing, batching and memory effects inside a real vLLM server are only approximated.
 - **The cache tier in the measurements is LMCache's CPU backend on the GPU's own host.** In the cluster the tier is across the network, which would make moving caches slower than measured.
-- **One machine.** The cluster is kind on a single 2-vCPU EC2 instance. Drains go through the real Eviction API and PDBs; a "spot interruption" is an annotation followed by a force-delete, not a real AWS interruption; "consolidation" imitates Karpenter rather than running it. No EKS, Karpenter or GPUs yet.
+- **Section 2 runs on one machine.** The cluster is kind on a single 2-vCPU EC2 instance. Drains go through the real Eviction API and PDBs; a "spot interruption" is an annotation followed by a force-delete; "consolidation" imitates Karpenter rather than running it. Section 3 is the run on EKS with Karpenter, real GPUs and a real interruption; it is one small run, not a benchmark.
 - **The cache tier is in memory** on the node that is never disrupted.
 - **PVC workspaces on kind are node-pinned.** The CSI hostpath driver keeps volumes on one node, so with `SNAPSHOTS=1` sandboxes cannot follow a drain to another node; that needs network storage (EBS, PD). The benchmark therefore uses tarball workspaces on kind.
 - **The router is a standalone Go proxy**, not a Gateway API Inference Extension endpoint picker.
 - **One namespace for all teams.** Tenancy is enforced in the API (every lookup filters by team); per-team namespaces with RBAC and NetworkPolicies between teams are not built yet. Sandboxes themselves are isolated by a default-deny NetworkPolicy.
-- **The sandbox agent is a stub** that writes files and a journal; no open-source coding agent is wrapped yet.
+- **Two sandbox agents.** A minimal builtin agent loop, and OpenCode (`sandbox.agent=opencode`). The simulated benchmark's load does not go through either; the recovery scenario and section 3 do.
 - A deleted replica is kept alive for 20 s by a preStop hook so the guard can rescue it; that delays every replica shutdown by up to 20 s.
