@@ -11,7 +11,6 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	v1 "github.com/TejasVaradaraj/anton-platform/api/v1alpha1"
-	"github.com/TejasVaradaraj/anton-platform/internal/common"
 )
 
 var (
@@ -81,7 +80,7 @@ func (c SessionCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c SessionCollector) Collect(ch chan<- prometheus.Metric) {
 	var list v1.AgentSessionList
-	if err := c.Reader.List(context.Background(), &list, client.InNamespace(common.Namespace)); err != nil {
+	if err := c.Reader.List(context.Background(), &list); err != nil {
 		return
 	}
 	phases := map[string]float64{}

@@ -4,6 +4,8 @@ package controller
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -74,7 +76,7 @@ func (r *SessionReconciler) setStatus(ctx context.Context, s *v1.AgentSession, f
 }
 
 func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	if req.Namespace != common.Namespace {
+	if !common.SessionNamespace(req.Namespace) {
 		return ctrl.Result{}, nil
 	}
 	var s v1.AgentSession
@@ -304,7 +306,7 @@ func (r *SessionReconciler) flushAndOffload(ctx context.Context, s *v1.AgentSess
 	loc, msg := v1.CacheNone, "hibernated"
 	if common.Mode(ctx, r.Client) == common.ModeAnton && s.Status.Replica != "" {
 		var rp corev1.Pod
-		if err := r.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: s.Status.Replica}, &rp); err == nil && rp.Status.PodIP != "" {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: common.Namespace, Name: s.Status.Replica}, &rp); err == nil && rp.Status.PodIP != "" {
 			url := common.ReplicaURL(rp.Status.PodIP)
 			move, why := true, ""
 			ic, icancel := context.WithTimeout(ctx, 5*time.Second)
@@ -382,9 +384,9 @@ func (r *SessionReconciler) sandboxPod(s *v1.AgentSession, persist bool) *corev1
 				},
 				Env: []corev1.EnvVar{
 					{Name: "SESSION_ID", Value: s.Name},
-					{Name: "TIER_URL", Value: r.TierURL},
+					{Name: "TIER_URL", Value: platformURL(r.TierURL, s.Namespace)},
 					{Name: "PERSIST_WORKSPACE", Value: persistEnv},
-					{Name: "ROUTER_URL", Value: r.RouterURL},
+					{Name: "ROUTER_URL", Value: platformURL(r.RouterURL, s.Namespace)},
 					{Name: "AGENT", Value: r.Agent},
 					{Name: "MODEL", Value: r.Model},
 				},
@@ -401,4 +403,23 @@ func (r *SessionReconciler) sandboxPod(s *v1.AgentSession, persist bool) *corev1
 			Volumes: []corev1.Volume{r.workspaceVolume(s)},
 		},
 	}
+}
+
+// platformURL makes a platform service URL usable from a team namespace: a
+// short name like http://anton-router:8080 only resolves inside the platform
+// namespace, so sandboxes elsewhere get anton-router.<platform>.svc.
+func platformURL(raw, sessionNamespace string) string {
+	if sessionNamespace == common.Namespace {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || strings.Contains(u.Hostname(), ".") {
+		return raw
+	}
+	host := u.Hostname() + "." + common.Namespace + ".svc"
+	if u.Port() != "" {
+		host += ":" + u.Port()
+	}
+	u.Host = host
+	return u.String()
 }

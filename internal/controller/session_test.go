@@ -832,3 +832,76 @@ func TestAdmissionPoliciesConfineTenantRolesAndNamespaces(t *testing.T) {
 		t.Fatal("an unlabelled team namespace must be refused")
 	}
 }
+
+// With tenancy on, a session lives in its team's namespace: the sandbox and
+// its workspace are created there, the sandbox reaches the platform's router
+// and tier by their full service names, and the session can still be found
+// and patched by name alone (what the router and guard do).
+func TestSessionInTeamNamespace(t *testing.T) {
+	if k8s == nil {
+		t.Skip("needs envtest (KUBEBUILDER_ASSETS)")
+	}
+	ctx := context.Background()
+	setMode(t, common.ModeAnton)
+	team := TeamNamespace("tenancy")
+	if err := k8s.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: team,
+		Labels: map[string]string{TenantLabel: "true", TeamLabel: "tenancy"}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, tier := newTier(t)
+	r := newReconciler(tier)
+	r.RouterURL = "http://anton-router:8080"
+	r.TierURL = "http://anton-tier:9000"
+
+	name := "tenancy-agent-1"
+	if err := k8s.Create(ctx, &v1.AgentSession{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: team},
+		Spec: v1.AgentSessionSpec{Team: "tenancy", Model: "m"}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: team, Name: name}}); err != nil {
+			t.Fatalf("reconcile in the team namespace: %v", err)
+		}
+	}
+	var p corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Namespace: team, Name: name + "-sandbox"}, &p); err != nil {
+		t.Fatalf("no sandbox in the team namespace: %v", err)
+	}
+	env := map[string]string{}
+	for _, e := range p.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["ROUTER_URL"] != "http://anton-router.anton.svc:8080" || env["TIER_URL"] != "http://anton-tier.anton.svc:9000" {
+		t.Fatalf("sandbox in a team namespace must use full service names, got ROUTER_URL=%q TIER_URL=%q", env["ROUTER_URL"], env["TIER_URL"])
+	}
+	if sandbox(t, name) != nil {
+		t.Fatal("the sandbox must not be created in the platform namespace")
+	}
+
+	found, err := common.FindSession(ctx, k8s, name)
+	if err != nil || found.Namespace != team {
+		t.Fatalf("FindSession: %v, namespace %q, want %q", err, found.GetNamespace(), team)
+	}
+	if err := common.PatchStatus(ctx, k8s, name, func(s *v1.AgentSession) { s.Status.Replica = "replica-x" }); err != nil {
+		t.Fatal(err)
+	}
+	var s v1.AgentSession
+	if err := k8s.Get(ctx, types.NamespacedName{Namespace: team, Name: name}, &s); err != nil || s.Status.Replica != "replica-x" {
+		t.Fatalf("status patch by name did not reach the team namespace: %v, replica %q", err, s.Status.Replica)
+	}
+
+	// A session in some other namespace is not Anton's to manage.
+	if err := k8s.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "not-a-team"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Create(ctx, &v1.AgentSession{ObjectMeta: metav1.ObjectMeta{Name: "stray", Namespace: "not-a-team"},
+		Spec: v1.AgentSessionSpec{Team: "x", Model: "m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "not-a-team", Name: "stray"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Get(ctx, types.NamespacedName{Namespace: "not-a-team", Name: "stray-sandbox"}, &p); !errors.IsNotFound(err) {
+		t.Fatalf("a session outside Anton's namespaces got a sandbox (err %v)", err)
+	}
+}

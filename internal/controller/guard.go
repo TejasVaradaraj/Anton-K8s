@@ -186,7 +186,7 @@ func (g *Guard) rescue(ctx context.Context, p *corev1.Pod, deadline time.Time) {
 	}
 
 	var list v1.AgentSessionList
-	_ = g.List(ctx, &list, client.InNamespace(common.Namespace))
+	_ = g.List(ctx, &list) // every namespace the cache covers: the platform's and each team's
 	prio := map[string]int32{}
 	release := map[string]string{} // session -> reason it was not rescued
 	elsewhere := map[string]bool{} // sessions that now live on another replica

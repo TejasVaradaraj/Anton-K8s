@@ -31,17 +31,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	"github.com/TejasVaradaraj/anton-platform/internal/common"
 )
 
 const (
-	TenantLabel        = "anton.dev/tenant"
-	TeamLabel          = "anton.dev/team"
+	TenantLabel        = common.TenantLabel
+	TeamLabel          = common.TeamLabel
 	MaxSessionsAnno    = "anton.dev/max-sessions"
-	TenantNamespacePre = "anton-team-"
+	TenantNamespacePre = common.TenantNamespacePre
 )
 
 // TeamNamespace is the namespace that holds a team's sessions.
-func TeamNamespace(team string) string { return TenantNamespacePre + team }
+func TeamNamespace(team string) string { return common.TeamNamespace(team) }
 
 // TenantBinding says which platform service account gets which tenant role.
 type TenantBinding struct {

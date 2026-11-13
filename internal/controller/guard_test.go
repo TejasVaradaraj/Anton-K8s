@@ -31,3 +31,17 @@ func TestHibernateMoveFollowsMeasuredHardware(t *testing.T) {
 		t.Fatal("no cache for the session: nothing to move")
 	}
 }
+
+func TestPlatformURLFromTeamNamespaces(t *testing.T) {
+	for _, tc := range []struct{ raw, ns, want string }{
+		{"http://anton-router:8080", "anton", "http://anton-router:8080"},
+		{"http://anton-router:8080", "anton-team-a", "http://anton-router.anton.svc:8080"},
+		{"http://anton-tier:9000", "anton-team-a", "http://anton-tier.anton.svc:9000"},
+		{"http://anton-router.anton.svc:8080", "anton-team-a", "http://anton-router.anton.svc:8080"},
+		{"http://10.0.0.5:8080", "anton-team-a", "http://10.0.0.5:8080"},
+	} {
+		if got := platformURL(tc.raw, tc.ns); got != tc.want {
+			t.Errorf("platformURL(%q, %q) = %q, want %q", tc.raw, tc.ns, got, tc.want)
+		}
+	}
+}
