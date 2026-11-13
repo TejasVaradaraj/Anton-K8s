@@ -1,0 +1,50 @@
+{{- if eq .Values.inference.backend "vllm" }}
+{{- $v := .Values.inference.vllm }}
+# LMCache configuration for every vLLM replica: a local CPU tier plus a
+# write-through remote tier (the shared LMCache server below), so KV blocks
+# outlive the replica that computed them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anton-lmcache
+  namespace: {{ .Release.Namespace }}
+data:
+  lmcache.yaml: |
+    chunk_size: {{ $v.lmcache.chunkSize }}
+    local_cpu: true
+    max_local_cpu_size: {{ $v.lmcache.localCpuGB }}
+    remote_url: "lm://anton-lmcache:65432"
+    remote_serde: "naive"
+---
+# The shared LMCache server: the KV tier that survives node loss. Like the
+# Anton tier it runs on a node the chaos benchmark never disrupts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-lmcache
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 2700   # a 9 GB image + 15 GB of weights take longer than the 10-minute default
+  selector: {matchLabels: {app: anton-lmcache}}
+  template:
+    metadata: {labels: {app: anton-lmcache}}
+    spec:
+      {{- include "anton.pinned" . | nindent 6 }}
+      containers:
+        - name: lmcache
+          image: {{ $v.image }}
+          command: {{- toYaml $v.lmcache.serverCommand | nindent 12 }}
+          ports: [{containerPort: 65432}]
+          resources: {requests: {cpu: 500m, memory: {{ $v.lmcache.serverMemory }}}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-lmcache
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: {app: anton-lmcache}
+  ports: [{port: 65432, targetPort: 65432}]
+{{- end }}

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: anton
+description: Durable AI-agent sessions on Kubernetes - operator, session router, inference replicas, product API and web UI.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+home: https://github.com/TejasVaradaraj/anton-platform
+keywords: [kubernetes, operator, llm, kv-cache, agents]

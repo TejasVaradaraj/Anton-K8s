@@ -1,0 +1,108 @@
+# Multi-tenancy RBAC (docs/multitenancy.md).
+#
+# The anton-tenant-* ClusterRoles are templates of what each platform
+# component may do inside ONE team namespace. They are never bound
+# cluster-wide: the operator's tenant controller binds them with RoleBindings
+# in each anton-team-* namespace, and an admission policy (admission.yaml)
+# refuses such bindings anywhere else.
+{{- $ns := .Release.Namespace }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-tenant-operator
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [anton.dev]
+    resources: [agentsessions/status]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims]
+    verbs: [get, list, watch, create, patch, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: ["", events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  # Provisioning the namespace itself.
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [resourcequotas, limitranges]
+    verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-tenant-api
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch, create, patch, delete, deletecollection]
+  - apiGroups: [anton.dev]
+    resources: [agentsessions/status]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-tenant-router
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [anton.dev]
+    resources: [agentsessions/status]
+    verbs: [get, patch]
+---
+# The operator's tenant controller: watch namespaces, and bind exactly the
+# three roles above. Kubernetes' escalation check means "bind" with
+# resourceNames is the only way it can grant anything, and only these.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-operator-tenants
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames: [anton-tenant-operator, anton-tenant-api, anton-tenant-router]
+---
+# The API creates team namespaces (admission.yaml restricts which) and the
+# sync worker lists sessions across them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-api-tenants
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, create]
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch]
+{{- range $b := list (dict "name" "anton-operator-tenants" "sa" "anton-operator") (dict "name" "anton-api-tenants" "sa" "anton-api") }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $b.name }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $b.name }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $b.sa }}, namespace: {{ $ns }}}
+{{- end }}

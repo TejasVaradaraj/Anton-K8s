@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-router
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 1800   # dependencies (Postgres, image pulls) can take longer than 10 min on a fresh cluster
+  # Recreate: two routers would disagree about session placement.
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: anton-router}}
+  template:
+    metadata: {labels: {app: anton-router}}
+    spec:
+      serviceAccountName: anton-router
+      {{- include "anton.pinned" . | nindent 6 }}
+      containers:
+        - name: router
+          image: {{ include "anton.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/router
+            # The affinity-vs-load rule prices a re-prefill with the same rate
+            # the replicas use.
+            - --prefill-ms-per-token={{ .Values.inference.sim.PREFILL_MS_PER_TOKEN }}
+            {{- with .Values.inference.sim.PREFILL_CURVE }}
+            - --prefill-curve={{ . }}
+            {{- end }}
+            - --replica-concurrency={{ .Values.inference.sim.CONCURRENCY }}
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: epp, containerPort: 9002}   # Gateway API Inference Extension endpoint picker (gRPC)
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 2}
+          resources: {{- toYaml .Values.router.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-router
+  namespace: {{ .Release.Namespace }}
+  labels: {app: anton-router}
+spec:
+  type: NodePort
+  selector: {app: anton-router}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080, nodePort: {{ .Values.router.nodePort }}}
+    - {name: epp, port: 9002, targetPort: 9002, appProtocol: kubernetes.io/h2c}

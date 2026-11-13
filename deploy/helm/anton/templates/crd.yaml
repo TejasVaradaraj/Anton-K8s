@@ -1,0 +1,59 @@
+# The CRD lives in templates/ (not crds/) so `helm upgrade` applies schema changes.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentsessions.anton.dev
+  annotations:
+    # Kept on uninstall: deleting the CRD would delete every AgentSession.
+    helm.sh/resource-policy: keep
+spec:
+  group: anton.dev
+  scope: Namespaced
+  names:
+    kind: AgentSession
+    listKind: AgentSessionList
+    plural: agentsessions
+    singular: agentsession
+    shortNames: [as]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Desired, type: string, jsonPath: .spec.desiredState}
+        - {name: Node, type: string, jsonPath: .status.node}
+        - {name: Replica, type: string, jsonPath: .status.replica}
+        - {name: Cache, type: string, jsonPath: .status.cacheLocation}
+        - {name: Tokens, type: integer, jsonPath: .status.cachedTokens}
+        - {name: Message, type: string, jsonPath: .status.message, priority: 1}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                team: {type: string}
+                model: {type: string}
+                priority: {type: integer, format: int32}
+                idleTimeoutSeconds: {type: integer, format: int32, minimum: 0}
+                desiredState: {type: string, enum: [Active, Hibernated]}
+            status:
+              type: object
+              properties:
+                phase: {type: string}
+                sandboxPod: {type: string}
+                node: {type: string}
+                replica: {type: string}
+                cacheLocation: {type: string}
+                cachedTokens: {type: integer, format: int64}
+                lastActivity: {type: string, format: date-time}
+                lastTransition: {type: string, format: date-time}
+                message: {type: string}
+                hibernations: {type: integer, format: int32}
+                workspaceSnapshot: {type: string}
+                rescues: {type: integer, format: int32}
+---

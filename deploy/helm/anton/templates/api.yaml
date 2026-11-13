@@ -1,0 +1,90 @@
+{{- if .Values.api.enabled }}
+{{- $env := include "anton.databaseURLEnv" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-api
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  progressDeadlineSeconds: 1800   # dependencies (Postgres, image pulls) can take longer than 10 min on a fresh cluster
+  selector: {matchLabels: {app: anton-api}}
+  template:
+    metadata: {labels: {app: anton-api}}
+    spec:
+      serviceAccountName: anton-api
+      {{- include "anton.pinned" . | nindent 6 }}
+      initContainers:
+        # Schema migrations run once per rollout, before any API pod serves.
+        - name: migrate
+          image: {{ include "anton.webImage" . }}
+          imagePullPolicy: {{ .Values.webImage.pullPolicy }}
+          command: [python, -c, "from app.db import migrate; migrate()"]
+          env: {{- $env | nindent 12 }}
+      containers:
+        - name: api
+          image: {{ include "anton.webImage" . }}
+          imagePullPolicy: {{ .Values.webImage.pullPolicy }}
+          env:
+            {{- $env | nindent 12 }}
+            - {name: RUN_MIGRATIONS, value: "0"}
+            - {name: RUN_SYNC, value: "0"}
+            - {name: ROUTER_URL, value: "http://anton-router:8080"}
+            - {name: PUBLIC_URL, value: {{ .Values.api.publicURL | quote }}}
+            - {name: DEV_LOGIN, value: {{ ternary "1" "0" .Values.api.devLogin | quote }}}
+            {{- if .Values.redis.enabled }}
+            - {name: REDIS_URL, value: "redis://anton-redis:6379/0"}
+            {{- end }}
+            {{- with .Values.api.googleOAuthSecret }}
+            - {name: GOOGLE_CLIENT_ID, valueFrom: {secretKeyRef: {name: {{ . }}, key: client_id}}}
+            - {name: GOOGLE_CLIENT_SECRET, valueFrom: {secretKeyRef: {name: {{ . }}, key: client_secret}}}
+            {{- end }}
+          ports: [{name: http, containerPort: 8000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 10, failureThreshold: 6}
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+---
+# The sync worker mirrors AgentSessions into Postgres. Exactly one runs (it is
+# idempotent, but two would double the API-server watch load for nothing).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-sync
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 1800   # dependencies (Postgres, image pulls) can take longer than 10 min on a fresh cluster
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: anton-sync}}
+  template:
+    metadata: {labels: {app: anton-sync}}
+    spec:
+      serviceAccountName: anton-api
+      {{- include "anton.pinned" . | nindent 6 }}
+      initContainers:
+        - name: migrate
+          image: {{ include "anton.webImage" . }}
+          imagePullPolicy: {{ .Values.webImage.pullPolicy }}
+          command: [python, -c, "from app.db import migrate; migrate()"]
+          env: {{- $env | nindent 12 }}
+      containers:
+        - name: sync
+          image: {{ include "anton.webImage" . }}
+          imagePullPolicy: {{ .Values.webImage.pullPolicy }}
+          command: [python, -m, app.sync]
+          env: {{- $env | nindent 12 }}
+          resources: {requests: {cpu: 20m, memory: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-api
+  namespace: {{ .Release.Namespace }}
+  labels: {app: anton-api}
+spec:
+  type: NodePort
+  selector: {app: anton-api}
+  ports: [{name: http, port: 8000, targetPort: 8000, nodePort: {{ .Values.api.nodePort }}}]
+{{- end }}

@@ -1,0 +1,247 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: anton
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentsessions.anton.dev
+spec:
+  group: anton.dev
+  scope: Namespaced
+  names:
+    kind: AgentSession
+    listKind: AgentSessionList
+    plural: agentsessions
+    singular: agentsession
+    shortNames: [as]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Desired, type: string, jsonPath: .spec.desiredState}
+        - {name: Node, type: string, jsonPath: .status.node}
+        - {name: Replica, type: string, jsonPath: .status.replica}
+        - {name: Cache, type: string, jsonPath: .status.cacheLocation}
+        - {name: Tokens, type: integer, jsonPath: .status.cachedTokens}
+        - {name: Message, type: string, jsonPath: .status.message, priority: 1}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                team: {type: string}
+                model: {type: string}
+                priority: {type: integer, format: int32}
+                idleTimeoutSeconds: {type: integer, format: int32, minimum: 0}
+                desiredState: {type: string, enum: [Active, Hibernated]}
+            status:
+              type: object
+              properties:
+                phase: {type: string}
+                sandboxPod: {type: string}
+                node: {type: string}
+                replica: {type: string}
+                cacheLocation: {type: string}
+                cachedTokens: {type: integer, format: int64}
+                lastActivity: {type: string, format: date-time}
+                lastTransition: {type: string, format: date-time}
+                message: {type: string}
+                hibernations: {type: integer, format: int32}
+                rescues: {type: integer, format: int32}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: anton
+  namespace: anton
+---
+# One role for the operator, router and bench keeps this small. A production
+# install would split it into three least-privilege roles.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions, agentsessions/status]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, patch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [nodes, configmaps]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, create]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: anton
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: anton}
+subjects:
+  - {kind: ServiceAccount, name: anton, namespace: anton}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anton-mode
+  namespace: anton
+data:
+  mode: anton   # plain | routing | anton
+---
+# Timings the mock replica replays. Measured with bench/colab_calibrate.ipynb
+# on a Colab GPU: Qwen2.5-1.5B-Instruct, fp16, Hugging Face transformers, at a
+# 16k-token context (raw rows in bench/calibration.json).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anton-sim-params
+  namespace: anton
+data:
+  PREFILL_MS_PER_TOKEN: "0.3196"
+  BYTES_PER_TOKEN: "28672"
+  OFFLOAD_BYTES_PER_SEC: "645938532"
+  RESTORE_BYTES_PER_SEC: "1077208520"
+  FIRST_TOKEN_MS: "30"
+  CAPACITY_TOKENS: "600000"
+  CONCURRENCY: "4"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-tier
+  namespace: anton
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: anton-tier}}
+  template:
+    metadata: {labels: {app: anton-tier}}
+    spec:
+      # The tier and control plane live on the node that is never disrupted.
+      nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: tier
+          image: anton:dev
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sim, tier]
+          ports: [{containerPort: 9000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 9000}, periodSeconds: 2}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-tier
+  namespace: anton
+spec:
+  selector: {app: anton-tier}
+  ports: [{port: 9000, targetPort: 9000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-replica
+  namespace: anton
+spec:
+  replicas: 4
+  selector: {matchLabels: {app: anton-replica}}
+  template:
+    metadata: {labels: {app: anton-replica}}
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: anton-replica}}
+      containers:
+        - name: replica
+          image: anton:dev
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sim, replica]
+          envFrom: [{configMapRef: {name: anton-sim-params}}]
+          env:
+            - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+            - {name: TIER_URL, value: "http://anton-tier:9000"}
+          ports: [{containerPort: 8000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 1}
+          lifecycle:
+            # Last line of defense: a deleted replica stays alive for 20s so
+            # the guard can offload its KV cache. The operator's --prestop
+            # flag must match this number.
+            preStop: {exec: {command: [/bin/sim, sleep, "20"]}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-operator
+  namespace: anton
+spec:
+  replicas: 1
+  # Recreate: never run two copies at once. Two operators would both act on
+  # the same session; two routers would disagree about session placement.
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: anton-operator}}
+  template:
+    metadata: {labels: {app: anton-operator}}
+    spec:
+      serviceAccountName: anton
+      nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: operator
+          image: anton:dev
+          imagePullPolicy: IfNotPresent
+          command: [/bin/operator, --image=anton:dev, --tier-url=http://anton-tier:9000, --prestop=20s]
+          readinessProbe: {httpGet: {path: /readyz, port: 8081}, periodSeconds: 2}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-router
+  namespace: anton
+spec:
+  replicas: 1
+  # Recreate: never run two copies at once. Two operators would both act on
+  # the same session; two routers would disagree about session placement.
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: anton-router}}
+  template:
+    metadata: {labels: {app: anton-router}}
+    spec:
+      serviceAccountName: anton
+      nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+      tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+      containers:
+        - name: router
+          image: anton:dev
+          imagePullPolicy: IfNotPresent
+          command: [/bin/router, --prefill-ms-per-token=0.3196, --replica-concurrency=4]
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 2}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-router
+  namespace: anton
+spec:
+  type: NodePort
+  selector: {app: anton-router}
+  ports: [{port: 8080, targetPort: 8080, nodePort: 30080}]

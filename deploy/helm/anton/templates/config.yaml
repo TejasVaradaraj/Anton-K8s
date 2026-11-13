@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anton-mode
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+  annotations:
+    # The API and the benchmark switch modes at runtime; upgrades keep it.
+    helm.sh/resource-policy: keep
+data:
+  mode: {{ .Values.mode }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anton-sim-params
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+data: {{- toYaml .Values.inference.sim | nindent 2 }}

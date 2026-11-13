@@ -1,0 +1,34 @@
+{{- if and .Values.api.enabled .Values.redis.enabled }}
+# Redis holds only rate-limit counters, which are fine to lose on restart,
+# so it runs without persistence.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-redis
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 1800   # dependencies (Postgres, image pulls) can take longer than 10 min on a fresh cluster
+  selector: {matchLabels: {app: anton-redis}}
+  template:
+    metadata: {labels: {app: anton-redis}}
+    spec:
+      {{- include "anton.pinned" . | nindent 6 }}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          args: [--save, "", --appendonly, "no", --maxmemory, 64mb, --maxmemory-policy, allkeys-lru]
+          ports: [{containerPort: 6379}]
+          readinessProbe: {exec: {command: [redis-cli, ping]}, periodSeconds: 5}
+          resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 96Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: {app: anton-redis}
+  ports: [{port: 6379, targetPort: 6379}]
+{{- end }}

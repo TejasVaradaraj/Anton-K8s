@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-tier
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 1800   # dependencies (Postgres, image pulls) can take longer than 10 min on a fresh cluster
+  selector: {matchLabels: {app: anton-tier}}
+  template:
+    metadata: {labels: {app: anton-tier}}
+    spec:
+      # The cache tier lives on the node that is never disrupted.
+      {{- include "anton.pinned" . | nindent 6 }}
+      containers:
+        - name: tier
+          image: {{ include "anton.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/bin/sim, tier]
+          ports: [{name: http, containerPort: 9000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 9000}, periodSeconds: 2}
+          resources: {{- toYaml .Values.tier.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-tier
+  namespace: {{ .Release.Namespace }}
+  labels: {app: anton-tier}
+spec:
+  selector: {app: anton-tier}
+  ports: [{name: http, port: 9000, targetPort: 9000}]

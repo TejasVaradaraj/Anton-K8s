@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-operator
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  progressDeadlineSeconds: 1800   # dependencies (Postgres, image pulls) can take longer than 10 min on a fresh cluster
+  selector: {matchLabels: {app: anton-operator}}
+  template:
+    metadata: {labels: {app: anton-operator}}
+    spec:
+      serviceAccountName: anton-operator
+      {{- include "anton.pinned" . | nindent 6 }}
+      containers:
+        - name: operator
+          image: {{ include "anton.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/operator
+            - --image={{ include "anton.sandboxImage" . }}
+            - --tier-url=http://anton-tier:9000
+            - --prestop={{ .Values.inference.preStopSeconds }}s
+            - --half-life={{ .Values.operator.halfLife }}
+            - --leader-elect={{ gt (int .Values.operator.replicas) 1 }}
+            - --workspace={{ .Values.sandbox.workspace }}
+            - --storage-class={{ .Values.sandbox.storageClassName }}
+            - --snapshot-class={{ .Values.sandbox.snapshotClassName }}
+            - --workspace-size={{ .Values.sandbox.size }}
+            - --runtime-class={{ .Values.sandbox.runtimeClassName }}
+            - --agent={{ .Values.sandbox.agent }}
+            - --model={{ .Values.sandbox.model }}
+            - --sandbox-tolerate={{ join "," .Values.sandbox.tolerateTaints }}
+          ports:
+            - {name: metrics, containerPort: 8080}
+            - {name: probes, containerPort: 8081}
+          livenessProbe: {httpGet: {path: /healthz, port: 8081}, periodSeconds: 10}
+          readinessProbe: {httpGet: {path: /readyz, port: 8081}, periodSeconds: 2}
+          resources: {{- toYaml .Values.operator.resources | nindent 12 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: anton-operator
+  namespace: {{ .Release.Namespace }}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: anton-operator}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels: {app: anton-operator}
+spec:
+  selector: {app: anton-operator}
+  ports: [{name: metrics, port: 8080, targetPort: 8080}]

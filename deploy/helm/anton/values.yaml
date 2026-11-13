@@ -1,0 +1,135 @@
+# Anton Platform chart values. The release must be installed into the
+# namespace "anton" (the operator and API address it by name for now).
+
+# Pull secrets for a private registry, attached to Anton's service accounts.
+imagePullSecrets: []
+
+image:
+  # One image holds every Go binary (operator, router, sim, bench).
+  repository: anton
+  tag: dev
+  pullPolicy: IfNotPresent
+sandboxImage:
+  # The agent sandbox: Alpine + bash + git + the agent (Dockerfile --target sandbox).
+  repository: anton-sandbox
+  tag: dev
+  pullPolicy: IfNotPresent
+webImage:
+  # FastAPI + the static Next.js UI.
+  repository: anton-web
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# plain | routing | anton. Lets one install act as each benchmark baseline.
+mode: anton
+
+# Pods that must survive every disruption (operator, router, cache tier,
+# product layer) are pinned here. On kind this is the control-plane node.
+controlPlaneScheduling:
+  nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+  tolerations:
+    - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+
+operator:
+  replicas: 2            # leader election keeps exactly one active
+  halfLife: 5m           # reuse half-life in the cache-value score
+  resources: {requests: {cpu: 50m, memory: 64Mi}}
+
+router:
+  resources: {requests: {cpu: 50m, memory: 32Mi}}
+  nodePort: 30080
+
+inference:
+  # mock: the calibrated simulator. vllm: real vLLM + LMCache (needs GPUs).
+  backend: mock
+  vllm:
+    # Verify at GPU bring-up: an image with vLLM and LMCache matching the
+    # calibration (vLLM 0.33, LMCache 0.5.6), and the LMCache server command.
+    image: lmcache/vllm-openai:latest-verify-at-bring-up
+    model: Qwen/Qwen2.5-7B-Instruct
+    servedModelName: qwen2.5-7b
+    maxModelLen: 32768
+    gpuMemoryUtilization: 0.85
+    toolCallParser: hermes          # Qwen2.5 tool calling, needed by OpenCode
+    hfTokenSecret: ""               # only for gated models
+    requests: {cpu: "2", memory: 12Gi}
+    nodeSelector: {anton.dev/gpu: "true"}
+    tolerations:
+      - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+    lmcache:
+      chunkSize: 256
+      localCpuGB: 8
+      serverMemory: 24Gi
+      serverCommand: [lmcache_server, 0.0.0.0, "65432"]
+  replicas: 4
+  # Seconds a deleted replica stays alive so the guard can offload its cache.
+  # The operator's --prestop is set from this; they must match.
+  preStopSeconds: 20
+  terminationGracePeriodSeconds: 30
+  # Voluntary disruptions (drains, consolidation) take at most this many
+  # replicas at once, so rescues never have to race several dying replicas.
+  pdbMaxUnavailable: 1
+  # Timings the mock replays: measured on a GPU (bench/calibration.json).
+  sim:
+    PREFILL_MS_PER_TOKEN: "0.3196"
+    BYTES_PER_TOKEN: "28672"
+    OFFLOAD_BYTES_PER_SEC: "645938532"
+    RESTORE_BYTES_PER_SEC: "1077208520"
+    FIRST_TOKEN_MS: "30"
+    CAPACITY_TOKENS: "600000"
+    CONCURRENCY: "4"
+
+tier:
+  resources: {requests: {cpu: 50m, memory: 128Mi}}
+
+sandbox:
+  # RuntimeClass for sandbox pods. "gvisor" isolates model-generated code in a
+  # user-space kernel (needs gVisor on the nodes, e.g. GKE Sandbox). Empty = runc.
+  runtimeClassName: ""
+  # The agent each sandbox runs: builtin (a minimal agent loop) or opencode
+  # (OpenCode, pointed at the session router). Both keep their state in the
+  # workspace, so it survives with the workspace.
+  agent: builtin
+  # Model name agents request; the router passes it to the replicas.
+  model: anton-mock
+  # Taint keys sandboxes tolerate, so they can share nodes with tainted
+  # inference replicas (e.g. [nvidia.com/gpu] on GPU nodes).
+  tolerateTaints: []
+  # Workspace storage for agent sandboxes: emptyDir, or pvc (one PVC per
+  # session, snapshotted with VolumeSnapshots on hibernation).
+  workspace: emptyDir
+  storageClassName: ""
+  snapshotClassName: ""
+  size: 1Gi
+
+api:
+  enabled: true
+  replicas: 1
+  nodePort: 30081
+  publicURL: http://localhost:8000
+  devLogin: true
+  # Name of a Secret with keys client_id and client_secret. Empty = no Google login.
+  googleOAuthSecret: ""
+  resources: {requests: {cpu: 50m, memory: 128Mi}}
+
+postgres:
+  # cnpg: a CloudNativePG Cluster (the operator must already be installed).
+  # statefulset: a single Postgres pod on a PVC, for clusters without CNPG.
+  mode: cnpg
+  instances: 1
+  storage: 2Gi
+  image: postgres:16-alpine
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+
+networkPolicy:
+  # Default-deny for agent sandboxes: they may reach only the cache tier and
+  # DNS; only the operator and API may reach them.
+  enabled: true
+
+monitoring:
+  # ServiceMonitors for the Prometheus Operator (kube-prometheus-stack).
+  enabled: false
+  grafanaDashboards: true

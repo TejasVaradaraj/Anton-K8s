@@ -1,0 +1,171 @@
+# One ServiceAccount and least-privilege role per component.
+{{- $ns := .Release.Namespace }}
+{{- range $c := list "operator" "router" "api" "bench" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: anton-{{ $c }}
+  namespace: {{ $ns }}
+  labels: {{- include "anton.labels" $ | nindent 4 }}
+{{- with $.Values.imagePullSecrets }}
+imagePullSecrets: {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+---
+# Operator: owns AgentSessions and sandbox pods; the guard reads nodes and
+# replicas, annotates replicas with pod-deletion-cost and patches status.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-operator
+  labels: {{- include "anton.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [anton.dev]
+    resources: [agentsessions/status]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: anton-operator
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, patch, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: ["", events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+---
+# Router: reads replicas and sessions, records placement in session status,
+# and wakes a hibernated session on its first request.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: anton-router
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [anton.dev]
+    resources: [agentsessions/status]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [pods, configmaps]
+    verbs: [get, list, watch]
+---
+# API + sync worker: create/patch/delete sessions, read cluster state for the
+# ops view, switch the mode and launch benchmark Jobs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: anton-api
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions]
+    verbs: [get, list, watch, create, patch, delete]
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list]
+  # The workspace terminal: a shell in the session's own sandbox. The API
+  # checks team ownership before opening it and records it in the audit log.
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, patch]
+    resourceNames: [anton-mode]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, create]
+---
+# The router skips replicas on nodes with a spot notice or a cordon.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-router-nodes
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-api-nodes
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+---
+# Bench: the chaos harness. It drains and kills nodes on purpose, so it needs
+# the most rights; it only runs when someone launches a benchmark.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-bench
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: anton-bench
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [anton.dev]
+    resources: [agentsessions, agentsessions/status]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [pods, configmaps]
+    verbs: [get, list, watch, create, patch, delete, deletecollection]
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale]
+    verbs: [get, list, watch, patch, update]
+{{- range $b := list (dict "kind" "ClusterRole" "name" "anton-operator" "sa" "anton-operator")
+                    (dict "kind" "Role" "name" "anton-operator" "sa" "anton-operator")
+                    (dict "kind" "Role" "name" "anton-router" "sa" "anton-router")
+                    (dict "kind" "ClusterRole" "name" "anton-router-nodes" "sa" "anton-router")
+                    (dict "kind" "Role" "name" "anton-api" "sa" "anton-api")
+                    (dict "kind" "ClusterRole" "name" "anton-api-nodes" "sa" "anton-api")
+                    (dict "kind" "ClusterRole" "name" "anton-bench" "sa" "anton-bench")
+                    (dict "kind" "Role" "name" "anton-bench" "sa" "anton-bench") }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ $b.kind }}Binding
+metadata:
+  name: {{ $b.name }}
+  {{- if eq $b.kind "Role" }}
+  namespace: {{ $ns }}
+  {{- end }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: {{ $b.kind }}, name: {{ $b.name }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $b.sa }}, namespace: {{ $ns }}}
+{{- end }}

@@ -1,0 +1,24 @@
+# kube-prometheus-stack, trimmed for a 2-vCPU kind box: Prometheus + Grafana +
+# kube-state-metrics; no Alertmanager or node-exporter.
+alertmanager: {enabled: false}
+nodeExporter: {enabled: false}
+prometheus-node-exporter: {enabled: false}
+kubeEtcd: {enabled: false}
+kubeControllerManager: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeProxy: {enabled: false}
+defaultRules: {create: false}
+prometheus:
+  prometheusSpec:
+    # Pick up Anton's ServiceMonitors/PodMonitors without matching Helm labels.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    scrapeInterval: 10s
+    retention: 2d
+    resources: {requests: {cpu: 100m, memory: 400Mi}}
+grafana:
+  # The admin password is generated into the Secret monitoring-grafana:
+  #   kubectl -n monitoring get secret monitoring-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+  sidecar:
+    dashboards: {enabled: true, searchNamespace: ALL, label: grafana_dashboard}
+  resources: {requests: {cpu: 50m, memory: 128Mi}}

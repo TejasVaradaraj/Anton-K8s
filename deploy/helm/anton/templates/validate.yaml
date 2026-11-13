@@ -1,0 +1,12 @@
+{{- if ne .Release.Namespace "anton" }}
+{{- fail "install this chart into the namespace \"anton\" (helm install anton deploy/helm/anton -n anton --create-namespace)" }}
+{{- end }}
+{{- if not (has .Values.mode (list "plain" "routing" "anton")) }}
+{{- fail "mode must be plain, routing or anton" }}
+{{- end }}
+{{- if not (has .Values.postgres.mode (list "cnpg" "statefulset")) }}
+{{- fail "postgres.mode must be cnpg or statefulset" }}
+{{- end }}
+{{- if and (eq .Values.inference.backend "vllm") (contains "verify-at-bring-up" .Values.inference.vllm.image) }}
+{{- fail "inference.vllm.image is a placeholder: set a verified vLLM + LMCache image before installing with backend=vllm" }}
+{{- end }}

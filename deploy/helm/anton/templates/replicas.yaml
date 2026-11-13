@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anton-replica
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.inference.replicas }}
+  progressDeadlineSeconds: 2700   # a 9 GB image + 15 GB of weights take longer than the 10-minute default
+  selector: {matchLabels: {app: anton-replica}}
+  template:
+    metadata: {labels: {app: anton-replica}}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.inference.terminationGracePeriodSeconds }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: anton-replica}}
+      {{- if eq .Values.inference.backend "vllm" }}
+      {{- with .Values.inference.vllm }}
+      nodeSelector: {{- toYaml .nodeSelector | nindent 8 }}
+      tolerations: {{- toYaml .tolerations | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: lmcache-config
+          configMap: {name: anton-lmcache}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 4Gi}
+        # Model weights survive replica restarts on the same node (the
+        # benchmark restarts replicas often; 15 GB per download otherwise).
+        - name: hf-cache
+          hostPath: {path: /var/lib/anton/hf-cache, type: DirectoryOrCreate}
+      {{- end }}
+      containers:
+        {{- if eq .Values.inference.backend "vllm" }}
+        {{- $v := .Values.inference.vllm }}
+        # Real inference: vLLM with LMCache (write-through to the shared
+        # LMCache server), and the adapter that gives it Anton's replica
+        # contract on port 8000. vLLM itself listens on 8001, pod-local.
+        - name: vllm
+          image: {{ $v.image }}
+          args:
+            - {{ $v.model }}
+            - --served-model-name={{ $v.servedModelName }}
+            - --port=8001
+            - --dtype=float16
+            - --max-model-len={{ $v.maxModelLen }}
+            - --gpu-memory-utilization={{ $v.gpuMemoryUtilization }}
+            - --enable-prefix-caching
+            - --enable-prompt-tokens-details   # reports cached_tokens: how Anton sees real KV hits
+            - --enable-auto-tool-choice
+            - --tool-call-parser={{ $v.toolCallParser }}
+            - '--kv-transfer-config={"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+          env:
+            - {name: LMCACHE_CONFIG_FILE, value: /etc/lmcache/lmcache.yaml}
+            - {name: PYTHONHASHSEED, value: "0"}   # LMCache chunk hashes must match across replicas
+            {{- with $v.hfTokenSecret }}
+            - {name: HF_TOKEN, valueFrom: {secretKeyRef: {name: {{ . }}, key: token}}}
+            {{- end }}
+          resources:
+            limits: {nvidia.com/gpu: 1}
+            requests: {{- toYaml $v.requests | nindent 14 }}
+          volumeMounts:
+            - {name: lmcache-config, mountPath: /etc/lmcache}
+            - {name: shm, mountPath: /dev/shm}
+            - {name: hf-cache, mountPath: /root/.cache/huggingface}
+          readinessProbe: {httpGet: {path: /health, port: 8001}, periodSeconds: 5, failureThreshold: 120}
+        - name: replica
+          image: {{ include "anton.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/bin/vllmadapter]
+          envFrom: [{configMapRef: {name: anton-sim-params}}]
+          env:
+            - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+            - {name: TIER_URL, value: "http://anton-tier:9000"}
+            - {name: VLLM_URL, value: "http://127.0.0.1:8001"}
+            - {name: MODEL, value: {{ $v.servedModelName | quote }}}
+          ports: [{name: http, containerPort: 8000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 5}
+          lifecycle:
+            preStop: {exec: {command: [/bin/sim, sleep, "{{ .Values.inference.preStopSeconds }}"]}}
+        {{- else }}
+        - name: replica
+          image: {{ include "anton.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/bin/sim, replica]
+          envFrom: [{configMapRef: {name: anton-sim-params}}]
+          env:
+            - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+            - {name: TIER_URL, value: "http://anton-tier:9000"}
+          ports: [{name: http, containerPort: 8000}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, periodSeconds: 1}
+          lifecycle:
+            # Last line of defense: a deleted replica stays alive so the guard
+            # can offload its KV cache (operator --prestop uses the same value).
+            preStop: {exec: {command: [/bin/sim, sleep, "{{ .Values.inference.preStopSeconds }}"]}}
+        {{- end }}
+---
+# Drains and Karpenter consolidation go through the Eviction API, which
+# honours this budget: at most this many replicas leave at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: anton-replica
+  namespace: {{ .Release.Namespace }}
+spec:
+  maxUnavailable: {{ .Values.inference.pdbMaxUnavailable }}
+  selector: {matchLabels: {app: anton-replica}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-replica
+  namespace: {{ .Release.Namespace }}
+  labels: {app: anton-replica}
+spec:
+  # Headless: the router talks to each replica directly; the Service exists
+  # for discovery and for Prometheus to find the metrics endpoints.
+  clusterIP: None
+  selector: {app: anton-replica}
+  ports: [{name: http, port: 8000, targetPort: 8000}]

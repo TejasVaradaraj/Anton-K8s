@@ -1,0 +1,66 @@
+# Guards for the two cluster-wide permissions multi-tenancy needs
+# (docs/multitenancy.md). CEL ValidatingAdmissionPolicies run inside the API
+# server: no webhook to operate.
+#
+# 1. The anton-tenant-* ClusterRoles may only be bound inside team namespaces.
+#    RBAC lets the operator bind exactly these roles (bind + resourceNames)
+#    but cannot say where; this says where, for everyone.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: anton-tenant-roles-only-in-tenant-namespaces
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [rolebindings]
+  validations:
+    - expression: >-
+        !object.roleRef.name.startsWith('anton-tenant-') ||
+        (has(namespaceObject.metadata.labels) &&
+         'anton.dev/tenant' in namespaceObject.metadata.labels &&
+         namespaceObject.metadata.labels['anton.dev/tenant'] == 'true')
+      message: anton-tenant-* roles can only be bound in namespaces labelled anton.dev/tenant=true
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: anton-tenant-roles-only-in-tenant-namespaces
+spec:
+  policyName: anton-tenant-roles-only-in-tenant-namespaces
+  validationActions: [Deny]
+---
+# 2. The API may create namespaces, but only team namespaces.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: anton-api-creates-only-team-namespaces
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [namespaces]
+  matchConditions:
+    - name: from-anton-api
+      expression: request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:anton-api'
+  validations:
+    - expression: >-
+        object.metadata.name.startsWith('anton-team-') &&
+        has(object.metadata.labels) &&
+        'anton.dev/tenant' in object.metadata.labels &&
+        object.metadata.labels['anton.dev/tenant'] == 'true'
+      message: the Anton API may only create anton-team-* namespaces labelled anton.dev/tenant=true
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: anton-api-creates-only-team-namespaces
+spec:
+  policyName: anton-api-creates-only-team-namespaces
+  validationActions: [Deny]

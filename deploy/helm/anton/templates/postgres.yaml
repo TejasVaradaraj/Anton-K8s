@@ -1,0 +1,78 @@
+{{- if .Values.api.enabled }}
+{{- if eq .Values.postgres.mode "cnpg" }}
+# CloudNativePG runs Postgres the Kubernetes way: it creates the pods and
+# PVCs, handles failover between instances, and writes the app credentials
+# into the Secret anton-db-app. Its Services are anton-db-rw / -ro / -r.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: anton-db
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.postgres.instances }}
+  bootstrap:
+    initdb: {database: anton, owner: anton}
+  storage:
+    size: {{ .Values.postgres.storage }}
+  affinity:
+    nodeSelector: {{- toYaml .Values.controlPlaneScheduling.nodeSelector | nindent 6 }}
+    {{- /* Omit when empty: CloudNativePG treats `tolerations: []` as different from
+           the pod's unset tolerations and recreates the instance in a loop. */}}
+    {{- with .Values.controlPlaneScheduling.tolerations }}
+    tolerations: {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- else }}
+{{- $secret := lookup "v1" "Secret" .Release.Namespace "anton-db" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: anton-db
+  namespace: {{ .Release.Namespace }}
+  annotations: {helm.sh/resource-policy: keep}
+type: Opaque
+data:
+  # Generated once at install and kept across upgrades.
+  password: {{ if $secret }}{{ index $secret.data "password" }}{{ else }}{{ randAlphaNum 24 | b64enc }}{{ end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: anton-postgres
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "anton.labels" . | nindent 4 }}
+spec:
+  serviceName: anton-postgres
+  replicas: 1
+  selector: {matchLabels: {app: anton-postgres}}
+  template:
+    metadata: {labels: {app: anton-postgres}}
+    spec:
+      {{- include "anton.pinned" . | nindent 6 }}
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          env:
+            - {name: POSTGRES_USER, value: anton}
+            - {name: POSTGRES_DB, value: anton}
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: anton-db, key: password}}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports: [{containerPort: 5432}]
+          readinessProbe: {exec: {command: [pg_isready, -U, anton]}, periodSeconds: 2}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: {{ .Values.postgres.storage }}}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anton-postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: {app: anton-postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+{{- end }}
+{{- end }}
