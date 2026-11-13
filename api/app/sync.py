@@ -80,9 +80,8 @@ def run_forever() -> None:
     while True:
         try:
             rv = relist()
-            for ev in watch.Watch().stream(
-                    kube.custom.list_namespaced_custom_object, kube.GROUP, kube.VERSION, kube.NS, kube.PLURAL,
-                    resource_version=rv, timeout_seconds=300):
+            call, args = kube.watch_sessions_args()  # one namespace, or all of them with tenancy on
+            for ev in watch.Watch().stream(call, *args, resource_version=rv, timeout_seconds=300):
                 apply(ev["object"], deleted=ev["type"] == "DELETED")
         except Exception as e:  # watch expired or API hiccup: relist and resume
             log.warning("watch restarted: %s", e)
