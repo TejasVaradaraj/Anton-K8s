@@ -51,24 +51,27 @@ type chatBackend interface {
 // ---------- builtin agent ----------
 
 type builtinAgent struct {
-	mu       sync.Mutex
-	onTurn   func() // persists the workspace right after a completed turn
-	path     string
-	router   string
-	session  string
-	model    string
-	toolToks int
-	sysToks  int
+	mu         sync.Mutex
+	onTurn     func() // persists the workspace right after a completed turn
+	path       string
+	router     string
+	session    string
+	model      string
+	toolToks   int
+	sysToks    int
+	sharedToks int
 }
 
 func newBuiltinAgent(dir, router, session string) *builtinAgent {
 	return &builtinAgent{
-		path:     filepath.Join(dir, ".anton", "conversation.json"),
-		router:   strings.TrimRight(router, "/"),
-		session:  session,
-		model:    envStr("MODEL", "anton-mock"),
-		sysToks:  int(envFloat("SYSTEM_PROMPT_TOKENS", 8000)),
-		toolToks: int(envFloat("TOOL_OUTPUT_TOKENS", 400)),
+		path:    filepath.Join(dir, ".anton", "conversation.json"),
+		router:  strings.TrimRight(router, "/"),
+		session: session,
+		model:   envStr("MODEL", "anton-mock"),
+		sysToks: int(envFloat("SYSTEM_PROMPT_TOKENS", 8000)),
+		// The part of the system prompt all sessions share; the rest is unique.
+		sharedToks: int(envFloat("SHARED_PROMPT_TOKENS", 1000)),
+		toolToks:   int(envFloat("TOOL_OUTPUT_TOKENS", 400)),
 	}
 }
 
@@ -82,13 +85,28 @@ func filler(label string, n int) string {
 	return b.String()[:n*4]
 }
 
+// systemPrompt is a short part every session shares (instructions, tool
+// definitions) followed by a long part only this session has (its repository
+// and files). On real GPUs an all-shared prompt made every session's cache
+// look warm on any replica that had served any other session: about 6,000 of
+// 7,400 prompt tokens were the same text (EKS run, 2026-11-13).
+func (a *builtinAgent) systemPrompt() string {
+	shared := min(a.sharedToks, a.sysToks)
+	var b strings.Builder
+	b.WriteString(filler("system", shared))
+	for i := 0; b.Len() < a.sysToks*4; i++ {
+		fmt.Fprintf(&b, "file %s/%d: this session's own repository contents and command output, line %d. ", a.session, i, i*7919)
+	}
+	return b.String()[:a.sysToks*4]
+}
+
 func (a *builtinAgent) load() []openai.Message {
 	var msgs []openai.Message
 	if b, err := os.ReadFile(a.path); err == nil {
 		_ = json.Unmarshal(b, &msgs)
 	}
 	if len(msgs) == 0 {
-		sys, _ := json.Marshal(filler("system", a.sysToks))
+		sys, _ := json.Marshal(a.systemPrompt())
 		msgs = []openai.Message{{Role: "system", Content: sys}}
 	}
 	return msgs
@@ -211,7 +229,16 @@ func startOpenCode(dir, router, session string) (*opencodeAgent, error) {
 					"baseURL": strings.TrimRight(router, "/") + "/s/" + session + "/v1",
 					"apiKey":  "anton", // the router ignores it; the SDK wants one
 				},
-				"models": map[string]any{model: map[string]any{"name": model}},
+				// Without limits OpenCode asks for 32000 output tokens, and a
+				// server with a 32768-token window (vLLM) rejects every request:
+				// prompt + max_tokens must fit the window (found on EKS, 2026-11-13).
+				"models": map[string]any{model: map[string]any{
+					"name": model,
+					"limit": map[string]any{
+						"context": int(envFloat("MODEL_CONTEXT", 32768)),
+						"output":  int(envFloat("MODEL_MAX_OUTPUT", 4096)),
+					},
+				}},
 			},
 		},
 		"model": "anton/" + model,

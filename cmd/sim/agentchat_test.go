@@ -116,3 +116,24 @@ func TestOpenCodeAgentReportsFirstCallUsage(t *testing.T) {
 		t.Fatalf("got %+v, want reply done, 2 turns, 2466 prompt, 2413 cached, 53 recomputed", out)
 	}
 }
+
+// Sessions share only the first part of the system prompt; the rest differs
+// from session to session, and is stable for one session across restarts.
+func TestBuiltinSystemPromptIsMostlyPerSession(t *testing.T) {
+	a := newBuiltinAgent(t.TempDir(), "http://x", "s-a")
+	b := newBuiltinAgent(t.TempDir(), "http://x", "s-b")
+	pa, pb := a.systemPrompt(), b.systemPrompt()
+	if len(pa) != a.sysToks*4 || len(pb) != b.sysToks*4 {
+		t.Fatalf("prompt lengths %d and %d, want %d", len(pa), len(pb), a.sysToks*4)
+	}
+	common := 0
+	for common < len(pa) && pa[common] == pb[common] {
+		common++
+	}
+	if common < a.sharedToks*4 || common > a.sharedToks*4+64 {
+		t.Fatalf("sessions share %d chars of prefix, want about %d", common, a.sharedToks*4)
+	}
+	if pa != newBuiltinAgent(t.TempDir(), "http://x", "s-a").systemPrompt() {
+		t.Fatal("the same session must get the same prompt again")
+	}
+}
