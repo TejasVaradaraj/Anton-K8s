@@ -22,7 +22,10 @@ if [ -z "$SG" ] || [ "$SG" = "None" ]; then
   SG=$(aws ec2 create-security-group --group-name anton-sg --description "Anton bench: SSH from my IP only" --query GroupId --output text)
 fi
 # SSH is open to this machine's current IP only.
-aws ec2 authorize-security-group-ingress --group-id "$SG" --protocol tcp --port 22 --cidr "$MYIP/32" >/dev/null 2>&1 || true
+# SSH is open to any address on purpose (owner's choice, 2026-11-13): the Mac
+# changes networks, and an IP-restricted rule locked the session out mid-run.
+# sshd on the box accepts keys only. Set SSH_CIDR to restrict it again.
+aws ec2 authorize-security-group-ingress --group-id "$SG" --protocol tcp --port 22 --cidr "${SSH_CIDR:-0.0.0.0/0}" >/dev/null 2>&1 || true
 
 ID=$(aws ec2 run-instances --image-id "$AMI" --instance-type "$TYPE" --key-name anton-key \
   --security-group-ids "$SG" \

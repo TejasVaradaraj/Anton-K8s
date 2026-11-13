@@ -77,10 +77,17 @@ destroy() {
     Name=instance-state-name,Values=pending,running,stopping --query 'Reservations[].Instances[].InstanceId' --output text)
   [ -n "$LEFT" ] && aws ec2 terminate-instances --instance-ids $LEFT >/dev/null && log "terminated leftover GPU instances: $LEFT"
   [ "$(terraform state list 2>/dev/null | grep -vc '^data\.')" = "0" ] || log "WARNING: Terraform still tracks resources; run deploy/eks/down.sh"
+  # Workspace and Postgres volumes outlive the cluster: the EBS CSI driver is
+  # destroyed before it can delete them (11 were left on 2026-11-13).
+  for v in $(aws ec2 describe-volumes --filters Name=status,Values=available Name=tag:ebs.csi.aws.com/cluster,Values=true \
+      --query 'Volumes[?starts_with(Tags[?Key==`Name`]|[0].Value, `anton-dynamic-pvc-`)].VolumeId' --output text); do
+    aws ec2 delete-volume --volume-id "$v" >/dev/null 2>&1 && echo "deleted leftover volume $v" >>"$OUT/teardown.log"
+  done
   CL=$(aws eks list-clusters --query 'clusters' --output text)
   echo "$CL" | grep -qw anton && log "WARNING: EKS cluster anton still present" || log "nothing left running"
   # The time-limit watchdog must not outlive the run (it kept pgrep matching after an early failure).
   [ -n "${WATCHDOG:-}" ] && pkill -P "$WATCHDOG" 2>/dev/null; kill "${WATCHDOG:-}" 2>/dev/null || true
+  [ -n "${FIS_WAITER:-}" ] && kill "$FIS_WAITER" 2>/dev/null || true
 }
 trap destroy EXIT
 ( sleep $((MAX_MINUTES * 60)); log "time limit reached"; kill -TERM $$ ) & WATCHDOG=$!
@@ -135,25 +142,77 @@ sed -e "s/__NAME__/$(terraform output -raw cluster_name)/" \
 kubectl -n anton rollout status deploy/anton-replica --timeout=45m
 kubectl get nodes -L node.kubernetes.io/instance-type,karpenter.sh/capacity-type,topology.kubernetes.io/zone | tee -a "$OUT/run.log"
 
+# HOLD_MINUTES>0: when the smoke test fails, keep the cluster and GPUs up to
+# that long instead of destroying them, so a fix can be tried on the live
+# cluster (a new cluster costs 25 minutes). `touch $OUT/retry` re-runs the
+# smoke test, `touch $OUT/abort` gives up. MAX_MINUTES still bounds the run.
+hold() {
+  [ "${HOLD_MINUTES:-0}" -gt 0 ] || return 1
+  log "HOLD: $1 failed; waiting up to ${HOLD_MINUTES}m for $OUT/retry or $OUT/abort"
+  local end=$((SECONDS + HOLD_MINUTES * 60))
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ -e "$OUT/abort" ] && { rm -f "$OUT/abort"; log "HOLD aborted"; return 1; }
+    [ -e "$OUT/retry" ] && { rm -f "$OUT/retry"; log "HOLD over: retrying $1"; return 0; }
+    sleep 5
+  done
+  log "HOLD expired"; return 1
+}
+
 log "4/7 smoke: an OpenCode session through the router"
-python3 "$REPO/deploy/doks/smoke.py" | tee "$OUT/smoke.log"
+until python3 "$REPO/deploy/doks/smoke.py" 2>&1 | tee "$OUT/smoke.log"; do
+  cp "$OUT/smoke.log" "$OUT/smoke-failed-$(date -u +%H%M%S).log"
+  hold smoke || exit 1
+done
 
 BENCH="$REPO/deploy/bench/run-profile.sh $PROFILE --replica-timeout=25m"
+# SKIP_RECOVERY=1 skips stages 5 and 5b (already measured on 2026-11-13) to re-run only the spot stage.
+if [ "${SKIP_RECOVERY:-0}" != "1" ]; then
 log "5/7 recovery, builtin agent (KV warmth from vLLM's own cached_tokens)"
 helm upgrade anton ../helm/anton -n anton --reuse-values --set sandbox.agent=builtin --wait --timeout 30m >/dev/null
-$BENCH --scenario=recovery --recovery-sequential --modes=plain,sandbox,routing,anton --recovery-turns=3 \
+$BENCH --scenario=recovery --recovery-sequential --modes="${STAGE5_MODES:-plain,sandbox,routing,anton}" --recovery-turns=3 \
   2>&1 | tee "$OUT/recovery-builtin.log" || true
+if [ "${SKIP_OPENCODE_RECOVERY:-0}" != "1" ]; then
 log "5b/7 recovery, OpenCode (a real coding agent's conversation survives)"
 helm upgrade anton ../helm/anton -n anton --reuse-values --set sandbox.agent=opencode --wait --timeout 30m >/dev/null
 $BENCH --scenario=recovery --recovery-sequential --modes=anton --sessions=4 --recovery-turns=2 \
   2>&1 | tee "$OUT/recovery-opencode.log" || true
+fi
+fi
 
-log "6/7 real spot interruption (AWS FIS) during builtin-agent load, anton mode"
+log "6/7 real spot interruption (AWS FIS) during real agent conversations, anton mode"
+# The recovery scenario, not the load one: the load scenario sends the
+# simulator's shorthand requests, which real vLLM rejects (708 of 708 errors on
+# 2026-11-13). FIS fires only once the conversations exist and the benchmark
+# says it is waiting.
 helm upgrade anton ../helm/anton -n anton --reuse-values --set sandbox.agent=builtin --wait --timeout 30m >/dev/null
-( sleep 240; log "sending a real spot interruption to one GPU node"
-  aws fis start-experiment --experiment-template-id "$(terraform output -raw fis_spot_template)" \
-    --query 'experiment.id' --output text >>"$OUT/run.log" 2>&1 ) &
-$BENCH --chaos=external --modes=anton --duration=8m --hibernate=0 2>&1 | tee "$OUT/spot-real.log" || true
+( for _ in $(seq 1 360); do
+    if kubectl -n anton logs job/anton-bench --tail=300 2>/dev/null | grep -q "waiting for an external disruption"; then
+      log "sending a real spot interruption to one GPU node"
+      aws fis start-experiment --experiment-template-id "$(terraform output -raw fis_spot_template)" \
+        --query 'experiment.id' --output text >>"$OUT/run.log" 2>&1
+      exit 0
+    fi
+    sleep 5
+  done
+  log "the benchmark never asked for the interruption; none sent" ) & FIS_WAITER=$!
+$BENCH --scenario=recovery --chaos=external --modes=anton --recovery-turns=3 2>&1 | tee "$OUT/spot-real.log" || true
+kill "$FIS_WAITER" 2>/dev/null || true
+
+# Baseline for the real-GPU numbers: the same drain and hard kill with the
+# shared LMCache tier switched off and sessions pinned to one replica
+# (routing mode). In stage 5 every mode kept its caches because LMCache writes
+# through to the shared server; this shows what is lost without it.
+if [ "${BASELINE_NO_TIER:-1}" = "1" ]; then
+  log "6b/7 baseline: recovery with the shared KV tier off (routing mode)"
+  helm upgrade anton ../helm/anton -n anton --reuse-values --set sandbox.agent=builtin \
+    --set inference.vllm.lmcache.remote=false --wait --timeout 30m >/dev/null || true
+  # run-profile.sh upgrades with --reuse-values, so remote=false stays set.
+  kubectl -n anton get configmap anton-lmcache -o jsonpath='{.data.lmcache\.yaml}' | tee "$OUT/lmcache-no-tier.yaml"
+  $BENCH --scenario=recovery --recovery-sequential --modes=routing --recovery-turns=3 \
+    2>&1 | tee "$OUT/recovery-no-tier.log" || true
+  kubectl -n anton get configmap anton-lmcache -o jsonpath='{.data.lmcache\.yaml}' | grep -q remote_url \
+    && log "WARNING: the shared tier was back on during the baseline; discard recovery-no-tier.log"
+fi
 
 log "7/7 saving logs"
 kubectl -n anton logs deploy/anton-operator --tail=5000 > "$OUT/operator.log" 2>&1 || true
