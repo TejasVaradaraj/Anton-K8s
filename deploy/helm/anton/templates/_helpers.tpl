@@ -29,4 +29,7 @@ tolerations: {{- toYaml .Values.controlPlaneScheduling.tolerations | nindent 2 }
 - name: DATABASE_URL
   value: "postgresql+psycopg://anton:$(DB_PASSWORD)@anton-postgres:5432/anton"
 {{- end }}
+{{- if .Values.tenancy.enabled }}
+- {name: TENANCY, value: "1"}
+{{- end }}
 {{- end -}}

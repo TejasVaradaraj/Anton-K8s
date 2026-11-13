@@ -96,7 +96,22 @@ rules:
   - apiGroups: [anton.dev]
     resources: [agentsessions]
     verbs: [get, list, watch]
-{{- range $b := list (dict "name" "anton-operator-tenants" "sa" "anton-operator") (dict "name" "anton-api-tenants" "sa" "anton-api") }}
+---
+# The router finds team namespaces to watch (it reads sessions there through
+# the anton-tenant-router RoleBindings) and checks that its binding exists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: anton-router-tenants
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get]
+    resourceNames: [anton-tenant-router-anton-router]
+{{- range $b := list (dict "name" "anton-operator-tenants" "sa" "anton-operator") (dict "name" "anton-api-tenants" "sa" "anton-api") (dict "name" "anton-router-tenants" "sa" "anton-router") }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

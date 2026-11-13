@@ -28,6 +28,7 @@ spec:
             - --prefill-curve={{ . }}
             {{- end }}
             - --replica-concurrency={{ .Values.inference.sim.CONCURRENCY }}
+            - --tenancy={{ .Values.tenancy.enabled }}
           ports:
             - {name: http, containerPort: 8080}
             - {name: epp, containerPort: 9002}   # Gateway API Inference Extension endpoint picker (gRPC)

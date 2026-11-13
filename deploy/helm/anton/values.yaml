@@ -105,6 +105,14 @@ sandbox:
   snapshotClassName: ""
   size: 1Gi
 
+# One namespace per team (docs/multitenancy.md). Off: every session lives in
+# the release namespace and tenancy is enforced by the API alone. On: the API
+# creates anton-team-<team>, the operator provisions it (RoleBindings,
+# default-deny NetworkPolicy, quota) and sessions, sandboxes and workspaces
+# live there; replicas stay shared, with vLLM's cache salted per team.
+tenancy:
+  enabled: false
+
 api:
   enabled: true
   replicas: 1

@@ -32,6 +32,7 @@ spec:
             - --agent={{ .Values.sandbox.agent }}
             - --model={{ .Values.sandbox.model }}
             - --sandbox-tolerate={{ join "," .Values.sandbox.tolerateTaints }}
+            - --tenancy={{ .Values.tenancy.enabled }}
           ports:
             - {name: metrics, containerPort: 8080}
             - {name: probes, containerPort: 8081}
